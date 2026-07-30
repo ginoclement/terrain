@@ -142,6 +142,14 @@ button.ghost { background: transparent; }
 
 .row-split { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 
+.inline-num { width: 64px !important; padding: 3px 6px; }
+.check-row .inline-num { margin-left: auto; }
+.tile-selects { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.tile-selects select { width: 56px; }
+#rotation { accent-color: var(--accent-2); }
+#rotation-value { color: var(--text); }
+.import-controls { display: flex; gap: 6px; }
+
 #map-wrap { position: relative; flex: 1; min-width: 0; }
 #map { position: absolute; inset: 0; }
 

@@ -66,6 +66,7 @@ export function createMap(container) {
     },
     selection: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
     draft: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+    route: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
   };
   const layers = [];
   for (const [id, bm] of Object.entries(BASEMAPS)) {
@@ -94,6 +95,12 @@ export function createMap(container) {
         'hillshade-shadow-color': '#2b1d0e',
         'hillshade-highlight-color': '#ffffff',
       },
+    },
+    {
+      id: 'route-line',
+      type: 'line',
+      source: 'route',
+      paint: { 'line-color': '#e74c8b', 'line-width': 3, 'line-opacity': 0.9 },
     },
     {
       id: 'selection-fill',
@@ -167,16 +174,19 @@ export function set3DTerrain(map, on, exaggeration = 1.3) {
   }
 }
 
-/** Add or update the letters/text preview overlay image aligned to a bbox. */
-export function setTextOverlay(map, dataUrl, bbox) {
-  const coords = bbox
-    ? [
-        [bbox[0], bbox[3]], // top-left  (west, north)
-        [bbox[2], bbox[3]], // top-right
-        [bbox[2], bbox[1]], // bottom-right
-        [bbox[0], bbox[1]], // bottom-left
-      ]
-    : null;
+/** Show or update a GPX route polyline on the map (empty array clears it). */
+export function setRoute(map, points) {
+  const features = points?.length
+    ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: points } }]
+    : [];
+  map.getSource('route').setData({ type: 'FeatureCollection', features });
+}
+
+/**
+ * Add or update the letters/text preview overlay image. `coords` is the four
+ * image corners [TL, TR, BR, BL] in lng/lat (rotation-aware).
+ */
+export function setTextOverlay(map, dataUrl, coords) {
   const existing = map.getSource('text-overlay');
   if (!dataUrl || !coords) {
     if (map.getLayer('text-overlay')) map.removeLayer('text-overlay');

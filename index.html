@@ -27,6 +27,7 @@
       <input id="search-input" type="search" placeholder="Search a place (Matterhorn, Grand Canyon…)" autocomplete="off">
       <button type="submit" title="Search">Go</button>
     </form>
+    <button id="btn-share" title="Copy a link that restores this view, selection, and settings">Share link</button>
     <div id="status" class="status"></div>
   </header>
 
@@ -75,6 +76,21 @@
             <option value='monospace'>Monospace</option>
           </select>
         </div>
+        <div class="field-row">
+          <label for="rotation">Rotation <span id="rotation-value">0°</span></label>
+          <input type="range" id="rotation" min="-180" max="180" step="1" value="0" disabled>
+        </div>
+        <div class="field-row">
+          <label>Import</label>
+          <div class="import-controls">
+            <input type="file" id="import-file" accept=".gpx,.geojson,.json" hidden>
+            <button id="btn-import" title="GeoJSON polygon becomes the cutout shape; GPX track becomes an embossable route">GPX / GeoJSON…</button>
+          </div>
+        </div>
+        <div class="row-split" id="route-row" style="display:none">
+          <p class="hint" id="route-info"></p>
+          <button id="btn-clear-route" class="ghost">✕</button>
+        </div>
         <div class="row-split">
           <p id="selection-info" class="hint">No selection yet — pick a tool and draw on the map.</p>
           <button id="btn-clear" class="ghost">Clear</button>
@@ -82,7 +98,39 @@
       </section>
 
       <section>
-        <h2>3 · Model settings</h2>
+        <h2>3 · Sculpt &amp; effects</h2>
+        <div class="field-row">
+          <label for="smoothing">Smoothing</label>
+          <select id="smoothing">
+            <option value="0" selected>Off</option>
+            <option value="1">Light</option>
+            <option value="2">Medium</option>
+            <option value="4">Strong</option>
+          </select>
+        </div>
+        <label class="check-row">
+          <input type="checkbox" id="water-toggle">
+          <span>Flatten water at level (m):</span>
+          <input type="number" id="water-level" value="0" step="1" class="inline-num">
+        </label>
+        <div class="field-row">
+          <label for="contour-step" title="0 = off. Quantizes elevation into terraces for a laser-cut topo look">Contour terraces (m)</label>
+          <input type="number" id="contour-step" value="0" min="0" step="10">
+        </div>
+        <label class="check-row">
+          <input type="checkbox" id="plate-toggle">
+          <span>Baseplate under cutout (mm):</span>
+          <input type="number" id="plate-height" value="1.5" min="0.4" max="20" step="0.1" class="inline-num">
+        </label>
+        <label class="check-row" id="route-emboss-row" style="display:none">
+          <input type="checkbox" id="route-emboss" checked>
+          <span>Emboss route, raised (mm):</span>
+          <input type="number" id="route-height" value="0.6" min="0.1" max="5" step="0.1" class="inline-num">
+        </label>
+      </section>
+
+      <section>
+        <h2>4 · Model settings</h2>
         <div class="field-row">
           <label for="resolution">Grid detail</label>
           <select id="resolution">
@@ -107,6 +155,23 @@
         </div>
         <button id="btn-generate" class="primary" disabled>Generate 3D model</button>
       </section>
+
+      <section>
+        <h2>5 · Advanced export</h2>
+        <div class="field-row">
+          <label title="Split the model into a grid of separately printable tiles that mate along straight cuts">Split into tiles</label>
+          <span class="tile-selects">
+            <select id="tile-cols"><option>1</option><option>2</option><option>3</option><option>4</option></select>
+            ×
+            <select id="tile-rows"><option>1</option><option>2</option><option>3</option><option>4</option></select>
+          </span>
+        </div>
+        <div class="field-row">
+          <label for="split-elev" title="0 = off. Splits into a lower and upper piece at this real-world elevation — print each in a different color and stack them">Two-piece split at (m)</label>
+          <input type="number" id="split-elev" value="0" min="0" step="50">
+        </div>
+        <p class="hint">These add ZIP download options in the preview panel after generating.</p>
+      </section>
     </aside>
 
     <main id="map-wrap">
@@ -128,6 +193,8 @@
         <button class="export-btn" data-format="3mf" disabled>3MF</button>
         <button class="export-btn" data-format="obj" disabled>OBJ</button>
         <button class="export-btn" data-format="ply" disabled>PLY</button>
+        <button class="export-btn" data-format="tiles" disabled title="Requires 'Split into tiles' > 1×1">STL tiles (ZIP)</button>
+        <button class="export-btn" data-format="two-piece" disabled title="Requires a two-piece split elevation">Two-piece STL (ZIP)</button>
       </div>
     </aside>
   </div>

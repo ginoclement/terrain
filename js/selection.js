@@ -1,6 +1,7 @@
 /**
  * Map selection tools: rectangle, square, circle, hexagon, freeform polygon,
- * and text/letters. Selections are stored in geographic coordinates and can be
+ * and text/letters — plus rotation, GeoJSON polygon import, and share-link
+ * serialization. Selections are stored in geographic coordinates and can be
  * rasterized into a boolean mask over any sample grid (used to cut the model).
  *
  * Works in both 2D and 3D terrain view — MapLibre reports terrain-aware
@@ -29,6 +30,18 @@ export function bboxDimensionsMeters(bbox) {
     width: (e - w) * mPerDegLon(midLat),
     height: (n - s) * M_PER_DEG_LAT,
   };
+}
+
+/** Rotate a lng/lat point about a center by deg (CCW), in local meters. */
+function rotatePoint([lon, lat], [clon, clat], deg) {
+  if (!deg) return [lon, lat];
+  const a = (deg * Math.PI) / 180;
+  const mLon = mPerDegLon(clat);
+  const dx = (lon - clon) * mLon;
+  const dy = (lat - clat) * M_PER_DEG_LAT;
+  const rx = dx * Math.cos(a) - dy * Math.sin(a);
+  const ry = dx * Math.sin(a) + dy * Math.cos(a);
+  return [clon + rx / mLon, clat + ry / M_PER_DEG_LAT];
 }
 
 function circlePoints(center, radiusM, segments, phase = 0) {
@@ -73,6 +86,10 @@ function bboxRing(bbox) {
   return [[w, s], [e, s], [e, n], [w, n]];
 }
 
+function bboxCenter(bbox) {
+  return [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+}
+
 /** Render text into a canvas; returns the canvas. Used for both the map
  * preview overlay and the mask rasterization, so they always agree. */
 export function renderTextCanvas(text, font, W, H, fillStyle = '#000') {
@@ -95,6 +112,80 @@ export function renderTextCanvas(text, font, W, H, fillStyle = '#000') {
   const yShift = ((m2.actualBoundingBoxAscent || 0) - (m2.actualBoundingBoxDescent || 0)) / 2;
   ctx.fillText(text, W / 2, H / 2 + yShift);
   return canvas;
+}
+
+/**
+ * Rasterize a lng/lat polyline into a W×H boolean mask over bbox (row 0 =
+ * south), with the line drawn `lineWidthPx` samples wide. Used to emboss
+ * GPX routes onto the model.
+ */
+export function rasterizeRouteMask(points, bbox, W, H, lineWidthPx = 2) {
+  const [w, s, e, n] = bbox;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = lineWidthPx;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  let started = false;
+  for (const [lon, lat] of points) {
+    const x = ((lon - w) / (e - w || 1e-12)) * (W - 1);
+    const y = (1 - (lat - s) / (n - s || 1e-12)) * (H - 1);
+    if (started) ctx.lineTo(x, y);
+    else { ctx.moveTo(x, y); started = true; }
+  }
+  ctx.stroke();
+  const data = ctx.getImageData(0, 0, W, H).data;
+  const mask = new Uint8Array(W * H);
+  for (let j = 0; j < H; j++) {
+    const row = H - 1 - j;
+    for (let i = 0; i < W; i++) {
+      mask[i + j * W] = data[(i + row * W) * 4 + 3] > 127 ? 1 : 0;
+    }
+  }
+  return mask;
+}
+
+/** Compute the derived ring / bbox / overlay corners for a selection. */
+function derive(sel) {
+  const rot = sel.rotationDeg || 0;
+  switch (sel.shape) {
+    case 'rect':
+    case 'square':
+    case 'text': {
+      const center = bboxCenter(sel.rect0);
+      const corners = bboxRing(sel.rect0).map((p) => rotatePoint(p, center, rot));
+      sel.ring = corners;
+      sel.bbox = ringBbox(corners);
+      sel.center = center;
+      // Overlay wants TL, TR, BR, BL (unrotated: [w,n],[e,n],[e,s],[w,s])
+      const [w0, s0, e0, n0] = sel.rect0;
+      sel.overlayCorners = [[w0, n0], [e0, n0], [e0, s0], [w0, s0]].map((p) => rotatePoint(p, center, rot));
+      break;
+    }
+    case 'circle': {
+      sel.ring = circlePoints(sel.center, sel.radiusM, 72).slice(0, -1);
+      sel.bbox = ringBbox(sel.ring);
+      break;
+    }
+    case 'hex': {
+      const base = circlePoints(sel.center, sel.radiusM, 6, Math.PI / 6).slice(0, -1);
+      sel.ring = base.map((p) => rotatePoint(p, sel.center, rot));
+      sel.bbox = ringBbox(sel.ring);
+      break;
+    }
+    case 'polygon': {
+      const center = bboxCenter(ringBbox(sel.basePoints));
+      sel.ring = sel.basePoints.map((p) => rotatePoint(p, center, rot));
+      sel.bbox = ringBbox(sel.ring);
+      sel.center = center;
+      break;
+    }
+  }
+  return sel;
 }
 
 export class SelectionManager {
@@ -201,6 +292,21 @@ export class SelectionManager {
     }
   }
 
+  /** Rotate the current selection (degrees CCW). No-op for circles. */
+  setRotation(deg) {
+    if (!this.selection || this.selection.shape === 'circle') return;
+    this.selection.rotationDeg = deg;
+    derive(this.selection);
+    this._renderSelection();
+    this.onSelectionChange(this.selection);
+  }
+
+  /** Replace the selection with an imported polygon ring (lng/lat pairs). */
+  setPolygonSelection(points) {
+    if (!points || points.length < 3) throw new Error('Polygon needs at least 3 points');
+    this._setSelection(derive({ shape: 'polygon', basePoints: points, rotationDeg: 0 }));
+  }
+
   clear() {
     this.selection = null;
     this._poly = null;
@@ -208,6 +314,54 @@ export class SelectionManager {
     this._clearDraft();
     this._renderSelection();
     this.onSelectionChange(null);
+  }
+
+  /** Compact serializable form for share links. */
+  toJSON() {
+    const sel = this.selection;
+    if (!sel) return null;
+    const round = (v) => Math.round(v * 1e6) / 1e6;
+    const base = { shape: sel.shape, rot: sel.rotationDeg || 0 };
+    switch (sel.shape) {
+      case 'rect':
+      case 'square':
+        return { ...base, rect0: sel.rect0.map(round) };
+      case 'text':
+        return { ...base, rect0: sel.rect0.map(round), text: sel.text, font: sel.font };
+      case 'circle':
+      case 'hex':
+        return { ...base, center: sel.center.map(round), r: Math.round(sel.radiusM) };
+      case 'polygon':
+        return { ...base, points: sel.basePoints.map((p) => p.map(round)) };
+    }
+    return null;
+  }
+
+  fromJSON(data) {
+    if (!data) return;
+    const sel = { shape: data.shape, rotationDeg: data.rot || 0 };
+    switch (data.shape) {
+      case 'rect':
+      case 'square':
+        sel.rect0 = data.rect0;
+        break;
+      case 'text':
+        sel.rect0 = data.rect0;
+        sel.text = data.text;
+        sel.font = data.font;
+        break;
+      case 'circle':
+      case 'hex':
+        sel.center = data.center;
+        sel.radiusM = data.r;
+        break;
+      case 'polygon':
+        sel.basePoints = data.points;
+        break;
+      default:
+        return;
+    }
+    this._setSelection(derive(sel));
   }
 
   // -- shape construction -----------------------------------------------
@@ -225,21 +379,19 @@ export class SelectionManager {
         x1 = x0 + (Math.sign(dxM) || 1) * (side / mPerDegLon(midLat));
         y1 = y0 + (Math.sign(dyM) || 1) * (side / M_PER_DEG_LAT);
       }
-      const bbox = [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+      const rect0 = [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+      const sel = { shape: tool, rect0, rotationDeg: 0 };
       if (tool === 'text') {
-        return { shape: 'text', bbox, text: this.textOptions.text, font: this.textOptions.font };
+        sel.text = this.textOptions.text;
+        sel.font = this.textOptions.font;
       }
-      return { shape: tool, bbox };
+      return derive(sel);
     }
     if (tool === 'circle') {
-      const r = localDistance(a, b);
-      const ring = circlePoints(a, r, 72).slice(0, -1);
-      return { shape: 'circle', center: a, radiusM: r, ring, bbox: ringBbox(ring) };
+      return derive({ shape: 'circle', center: a, radiusM: localDistance(a, b), rotationDeg: 0 });
     }
     if (tool === 'hex') {
-      const r = localDistance(a, b);
-      const ring = circlePoints(a, r, 6, Math.PI / 6).slice(0, -1); // pointy-top
-      return { shape: 'hex', center: a, radiusM: r, ring, bbox: ringBbox(ring) };
+      return derive({ shape: 'hex', center: a, radiusM: localDistance(a, b), rotationDeg: 0 });
     }
     return null;
   }
@@ -247,7 +399,7 @@ export class SelectionManager {
   _polyDraft(cursor) {
     const pts = [...this._poly, cursor];
     if (pts.length < 2) return null;
-    return { shape: 'polygon', points: pts, bbox: ringBbox(pts), draft: true };
+    return { shape: 'polygon', points: pts, bbox: ringBbox(pts), ring: pts, draft: true };
   }
 
   _finishPolygon() {
@@ -255,7 +407,7 @@ export class SelectionManager {
     const points = this._poly;
     this._poly = null;
     this._clearDraft();
-    const shape = { shape: 'polygon', points, bbox: ringBbox(points) };
+    const shape = derive({ shape: 'polygon', basePoints: points, rotationDeg: 0 });
     if (this._shapeBigEnough(shape)) {
       this._setSelection(shape);
       this.setTool(null);
@@ -275,37 +427,18 @@ export class SelectionManager {
 
   // -- map rendering ----------------------------------------------------
 
-  _shapeRing(shape) {
-    switch (shape.shape) {
-      case 'rect':
-      case 'square':
-      case 'text':
-        return bboxRing(shape.bbox);
-      case 'circle':
-      case 'hex':
-        return shape.ring;
-      case 'polygon':
-        return shape.points;
-      default:
-        return null;
-    }
-  }
-
   _renderSelection() {
     const features = [];
     const sel = this.selection;
-    if (sel) {
-      const ring = this._shapeRing(sel);
-      if (ring) features.push(polygonFeature(ring));
-    }
+    if (sel?.ring) features.push(polygonFeature(sel.ring));
     this.map.getSource('selection').setData({ type: 'FeatureCollection', features });
 
     if (sel?.shape === 'text') {
-      const { width, height } = bboxDimensionsMeters(sel.bbox);
+      const { width, height } = bboxDimensionsMeters(sel.rect0);
       const W = 512;
       const H = Math.max(32, Math.min(1024, Math.round((W * height) / Math.max(1, width))));
       const canvas = renderTextCanvas(sel.text, sel.font, W, H, 'rgba(255,140,0,0.9)');
-      setTextOverlay(this.map, canvas.toDataURL(), sel.bbox);
+      setTextOverlay(this.map, canvas.toDataURL(), sel.overlayCorners);
     } else {
       setTextOverlay(this.map, null, null);
     }
@@ -314,8 +447,7 @@ export class SelectionManager {
   _updateDraft(shape) {
     const features = [];
     if (shape) {
-      const ring = this._shapeRing(shape);
-      if (ring && ring.length >= 3) features.push(polygonFeature(ring));
+      if (shape.ring && shape.ring.length >= 3) features.push(polygonFeature(shape.ring));
       if (shape.draft) {
         for (const p of shape.points.slice(0, -1)) {
           features.push({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: p } });
@@ -340,18 +472,30 @@ export class SelectionManager {
     if (!sel) throw new Error('No selection');
     const mask = new Uint8Array(W * H);
     const [w, s, e, n] = sel.bbox;
+    const rot = sel.rotationDeg || 0;
 
-    if (sel.shape === 'rect' || sel.shape === 'square') {
+    if ((sel.shape === 'rect' || sel.shape === 'square') && !rot) {
       mask.fill(1);
       return mask;
     }
     if (sel.shape === 'text') {
-      const canvas = renderTextCanvas(sel.text, sel.font, W, H);
-      const data = canvas.getContext('2d').getImageData(0, 0, W, H).data;
+      // Render the text once over the unrotated rect0, then look samples up
+      // by inverse-rotating them into that frame.
+      const [w0, s0, e0, n0] = sel.rect0;
+      const dims0 = bboxDimensionsMeters(sel.rect0);
+      const cw = 1024;
+      const ch = Math.max(64, Math.min(2048, Math.round((cw * dims0.height) / Math.max(1, dims0.width))));
+      const canvas = renderTextCanvas(sel.text, sel.font, cw, ch);
+      const data = canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
       for (let j = 0; j < H; j++) {
-        const row = H - 1 - j; // canvas y is down; mask row 0 is south
+        const lat = s + ((n - s) * j) / (H - 1);
         for (let i = 0; i < W; i++) {
-          mask[i + j * W] = data[(i + row * W) * 4 + 3] > 127 ? 1 : 0;
+          const lon = w + ((e - w) * i) / (W - 1);
+          const [lon0, lat0] = rotatePoint([lon, lat], sel.center, -rot);
+          if (lon0 < w0 || lon0 > e0 || lat0 < s0 || lat0 > n0) continue;
+          const px = Math.round(((lon0 - w0) / (e0 - w0)) * (cw - 1));
+          const py = Math.round((1 - (lat0 - s0) / (n0 - s0)) * (ch - 1));
+          mask[i + j * W] = data[(px + py * cw) * 4 + 3] > 127 ? 1 : 0;
         }
       }
       return mask;
@@ -371,8 +515,8 @@ export class SelectionManager {
       }
       return mask;
     }
-    // hex / polygon: point-in-ring test
-    const ring = sel.shape === 'hex' ? sel.ring : sel.points;
+    // rect/square (rotated), hex, polygon: point-in-ring test
+    const ring = sel.ring;
     for (let j = 0; j < H; j++) {
       const lat = s + ((n - s) * j) / (H - 1);
       for (let i = 0; i < W; i++) {

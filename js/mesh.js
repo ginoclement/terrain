@@ -102,6 +102,19 @@ export function buildTerrainSolid({ width: W, height: H, topZ, mask, xs, ys }) {
   };
 }
 
+/** Enclosed volume of a closed mesh in model units³ (divergence theorem). */
+export function meshVolume(positions, indices) {
+  let vol = 0;
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t] * 3, b = indices[t + 1] * 3, c = indices[t + 2] * 3;
+    const ax = positions[a], ay = positions[a + 1], az = positions[a + 2];
+    const bx = positions[b], by = positions[b + 1], bz = positions[b + 2];
+    const cx = positions[c], cy = positions[c + 1], cz = positions[c + 2];
+    vol += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
+  }
+  return vol;
+}
+
 /**
  * Map raw elevations to model-space top-surface heights.
  * z = baseMM + (elev - minElev) * horizontalScale * exaggeration, so the model

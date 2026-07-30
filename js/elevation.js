@@ -29,6 +29,13 @@ export const ELEVATION_SOURCES = {
     decode: (r, g, b) => -10000 + (r * 65536 + g * 256 + b) * 0.1,
     attribution: 'Elevation © MapTiler',
   },
+  usgs3dep: {
+    name: 'USGS 3DEP (US, high-res)',
+    description: 'USGS 3D Elevation Program ImageServer — down to ~1 m in much of the United States. Free, no key. US coverage only.',
+    type: 'imageserver',
+    needsKey: false,
+    attribution: 'Elevation: USGS 3D Elevation Program',
+  },
   openmeteo: {
     name: 'Open-Meteo (Copernicus GLO-90)',
     description: 'Copernicus GLO-90 DEM via the Open-Meteo elevation API. Free, no key. Coarser (~90 m) and slower — best for grid sizes ≤ 128.',
@@ -175,6 +182,50 @@ async function fetchApiGrid(bbox, gridW, gridH, { onProgress } = {}) {
   return { elev, zoom: null };
 }
 
+// USGS 3DEP: a single exportImage request returns a Float32 GeoTIFF sampled
+// exactly onto our grid. geotiff.js is loaded lazily on first use.
+let geotiffModule = null;
+async function fetch3DEPGrid(bbox, gridW, gridH, { onProgress } = {}) {
+  onProgress?.('Requesting USGS 3DEP raster…');
+  if (!geotiffModule) {
+    geotiffModule = await import('https://cdn.jsdelivr.net/npm/geotiff@2.1.3/+esm');
+  }
+  const [w, s, e, n] = bbox;
+  const params = new URLSearchParams({
+    bbox: `${w},${s},${e},${n}`,
+    bboxSR: '4326',
+    imageSR: '4326',
+    size: `${gridW},${gridH}`,
+    format: 'tiff',
+    pixelType: 'F32',
+    interpolation: 'RSP_BilinearInterpolation',
+    noData: '0',
+    f: 'image',
+  });
+  const resp = await fetch(`https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?${params}`);
+  if (!resp.ok) throw new Error(`USGS 3DEP request failed (${resp.status})`);
+  const buf = await resp.arrayBuffer();
+  onProgress?.('Decoding GeoTIFF…');
+  let raster;
+  try {
+    const tiff = await geotiffModule.fromArrayBuffer(buf);
+    const image = await tiff.getImage();
+    [raster] = await image.readRasters();
+  } catch {
+    throw new Error('USGS 3DEP returned no usable data — is the selection inside the United States?');
+  }
+  // GeoTIFF row 0 is the north edge; our grid row 0 is south.
+  const elev = new Float32Array(gridW * gridH);
+  for (let j = 0; j < gridH; j++) {
+    const srcRow = (gridH - 1 - j) * gridW;
+    for (let i = 0; i < gridW; i++) {
+      const v = raster[srcRow + i];
+      elev[i + j * gridW] = Number.isFinite(v) && v > -10000 ? v : 0;
+    }
+  }
+  return { elev, zoom: null };
+}
+
 /**
  * Fetch an elevation grid from the chosen source.
  * @returns {Promise<{elev: Float32Array, zoom: ?number}>}
@@ -186,5 +237,6 @@ export async function fetchElevationGrid(sourceId, bbox, gridW, gridH, opts = {}
     throw new Error(`${source.name} needs an API key — enter one under Data Sources, or switch source.`);
   }
   if (source.type === 'tiles') return fetchTileGrid(source, bbox, gridW, gridH, opts);
+  if (source.type === 'imageserver') return fetch3DEPGrid(bbox, gridW, gridH, opts);
   return fetchApiGrid(bbox, gridW, gridH, opts);
 }
