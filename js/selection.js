@@ -198,6 +198,7 @@ export class SelectionManager {
     this.textOptions = { text: 'A', font: '"Archivo Black", sans-serif' };
     this._drag = null; // in-progress drag {start}
     this._poly = null; // in-progress polygon points
+    this._move = null; // in-progress selection move {start, snapshot}
     this._bindEvents();
   }
 
@@ -206,19 +207,37 @@ export class SelectionManager {
     const canvas = map.getCanvas();
 
     map.on('mousedown', (ev) => {
-      if (!this.tool || this.tool === 'polygon') return;
-      ev.preventDefault();
-      this._drag = { start: [ev.lngLat.lng, ev.lngLat.lat] };
+      if (this.tool && this.tool !== 'polygon') {
+        ev.preventDefault();
+        this._drag = { start: [ev.lngLat.lng, ev.lngLat.lat] };
+        return;
+      }
+      // No tool active: grab the existing selection to move it.
+      if (!this.tool && this.selection && this._hitSelection(ev.lngLat)) {
+        ev.preventDefault();
+        this._move = { start: [ev.lngLat.lng, ev.lngLat.lat], snapshot: this._geometrySnapshot() };
+        map.getCanvas().style.cursor = 'grabbing';
+      }
     });
     map.on('mousemove', (ev) => {
       const p = [ev.lngLat.lng, ev.lngLat.lat];
       if (this._drag) {
         this._updateDraft(this._dragShape(this._drag.start, p));
+      } else if (this._move) {
+        this._applyMoveDelta(p[0] - this._move.start[0], p[1] - this._move.start[1]);
       } else if (this._poly && this._poly.length) {
         this._updateDraft(this._polyDraft(p));
+      } else if (!this.tool && this.selection) {
+        map.getCanvas().style.cursor = this._hitSelection(ev.lngLat) ? 'move' : '';
       }
     });
     map.on('mouseup', (ev) => {
+      if (this._move) {
+        this._move = null;
+        map.getCanvas().style.cursor = 'move';
+        this.onSelectionChange(this.selection);
+        return;
+      }
       if (!this._drag) return;
       const shape = this._dragShape(this._drag.start, [ev.lngLat.lng, ev.lngLat.lat]);
       this._drag = null;
@@ -250,6 +269,8 @@ export class SelectionManager {
     });
     window.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape') {
+        if (this._move) this._applyMoveDelta(0, 0); // snap back to where it was
+        this._move = null;
         this._drag = null;
         this._poly = null;
         this._clearDraft();
@@ -260,6 +281,10 @@ export class SelectionManager {
       if (this._drag) {
         this._drag = null;
         this._clearDraft();
+      }
+      if (this._move) {
+        this._move = null;
+        this.onSelectionChange(this.selection);
       }
     });
   }
@@ -362,6 +387,44 @@ export class SelectionManager {
         return;
     }
     this._setSelection(derive(sel));
+  }
+
+  // -- selection moving --------------------------------------------------
+
+  _hitSelection(lngLat) {
+    const ring = this.selection?.ring;
+    return !!ring && pointInRing(lngLat.lng, lngLat.lat, ring);
+  }
+
+  _geometrySnapshot() {
+    const sel = this.selection;
+    switch (sel.shape) {
+      case 'rect':
+      case 'square':
+      case 'text':
+        return { rect0: [...sel.rect0] };
+      case 'circle':
+      case 'hex':
+        return { center: [...sel.center] };
+      case 'polygon':
+        return { basePoints: sel.basePoints.map((p) => [...p]) };
+      default:
+        return {};
+    }
+  }
+
+  _applyMoveDelta(dLon, dLat) {
+    const sel = this.selection;
+    const snap = this._move.snapshot;
+    if (snap.rect0) {
+      sel.rect0 = [snap.rect0[0] + dLon, snap.rect0[1] + dLat, snap.rect0[2] + dLon, snap.rect0[3] + dLat];
+    } else if (snap.center) {
+      sel.center = [snap.center[0] + dLon, snap.center[1] + dLat];
+    } else if (snap.basePoints) {
+      sel.basePoints = snap.basePoints.map((p) => [p[0] + dLon, p[1] + dLat]);
+    }
+    derive(sel);
+    this._renderSelection();
   }
 
   // -- shape construction -----------------------------------------------

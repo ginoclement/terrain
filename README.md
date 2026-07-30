@@ -35,6 +35,8 @@ modules and fetches map data — any static server is fine.)
      printable plate.
    - **Rotation**: any selection except circles can be rotated with the
      slider to align with a valley or coastline.
+   - **Moving**: with no tool active, drag an existing selection to
+     reposition it (the cursor changes to a move cursor over it).
    - **Import**: load a **GeoJSON** polygon (e.g. a country or county
      boundary) as the cutout shape, or a **GPX** track to emboss a hiking
      route as a raised line on the model.
@@ -59,6 +61,9 @@ modules and fetches map data — any static server is fine.)
      on the lower one (e.g. white above the snow line).
 5. **Share** — the Share link button copies a URL that restores your view,
    selection, and settings.
+
+The sidebar and the 3D preview panel are resizable — drag the divider next
+to either one; sizes persist across visits.
 
 ## Elevation data sources
 
