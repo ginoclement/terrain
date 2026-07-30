@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terrain → STL Generator</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Bungee&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+  <link href="css/style.css" rel="stylesheet">
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/fflate@0.8.2/umd/index.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>⛰️ Terrain → STL</h1>
+    <form id="search-form">
+      <input id="search-input" type="search" placeholder="Search a place (Matterhorn, Grand Canyon…)" autocomplete="off">
+      <button type="submit" title="Search">Go</button>
+    </form>
+    <div id="status" class="status"></div>
+  </header>
+
+  <div id="layout">
+    <aside id="sidebar">
+      <section>
+        <h2>1 · Map &amp; data</h2>
+        <div id="basemap-options" class="option-group"></div>
+        <label class="check-row">
+          <input type="checkbox" id="hillshade-toggle">
+          <span>Hillshade overlay (aligned to DEM)</span>
+        </label>
+        <div class="field-row">
+          <label for="source-select">Elevation source</label>
+          <select id="source-select"></select>
+        </div>
+        <p id="source-desc" class="hint"></p>
+        <div class="field-row" id="maptiler-key-row" style="display:none">
+          <label for="maptiler-key">MapTiler key</label>
+          <input type="password" id="maptiler-key" placeholder="free key from maptiler.com">
+        </div>
+      </section>
+
+      <section>
+        <h2>2 · Select an area</h2>
+        <div class="tool-grid">
+          <button class="tool-btn" data-tool="rect" title="Drag a rectangle">▭ Rectangle</button>
+          <button class="tool-btn" data-tool="square" title="Drag a square (constrained)">□ Square</button>
+          <button class="tool-btn" data-tool="circle" title="Drag from center outwards">◯ Circle</button>
+          <button class="tool-btn" data-tool="hex" title="Drag from center outwards">⬡ Hexagon</button>
+          <button class="tool-btn" data-tool="polygon" title="Click points; click the first point or double-click to close">⬠ Polygon</button>
+          <button class="tool-btn" data-tool="text" title="Type text below, then drag a box on the map">A Letters</button>
+        </div>
+        <p id="polygon-hint" class="hint" style="display:none">Click to add points; click the first point (or double-click) to close. Esc cancels.</p>
+        <div class="field-row">
+          <label for="text-input">Text</label>
+          <input type="text" id="text-input" value="A" maxlength="24">
+        </div>
+        <div class="field-row">
+          <label for="font-select">Font</label>
+          <select id="font-select">
+            <option value='"Archivo Black", sans-serif'>Archivo Black (solid)</option>
+            <option value='"Bungee", sans-serif'>Bungee (chunky)</option>
+            <option value='Impact, "Arial Black", sans-serif'>Impact</option>
+            <option value='Georgia, serif'>Georgia (serif)</option>
+            <option value='monospace'>Monospace</option>
+          </select>
+        </div>
+        <div class="row-split">
+          <p id="selection-info" class="hint">No selection yet — pick a tool and draw on the map.</p>
+          <button id="btn-clear" class="ghost">Clear</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>3 · Model settings</h2>
+        <div class="field-row">
+          <label for="resolution">Grid detail</label>
+          <select id="resolution">
+            <option value="64">64 — draft</option>
+            <option value="128">128 — quick</option>
+            <option value="256" selected>256 — standard</option>
+            <option value="384">384 — fine</option>
+            <option value="512">512 — very fine</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="model-size">Size (longest side, mm)</label>
+          <input type="number" id="model-size" value="100" min="10" max="400" step="5">
+        </div>
+        <div class="field-row">
+          <label for="exaggeration">Vertical exaggeration</label>
+          <input type="number" id="exaggeration" value="1.5" min="0.1" max="10" step="0.1">
+        </div>
+        <div class="field-row">
+          <label for="base-height">Base thickness (mm)</label>
+          <input type="number" id="base-height" value="3" min="0.4" max="30" step="0.5">
+        </div>
+        <button id="btn-generate" class="primary" disabled>Generate 3D model</button>
+      </section>
+    </aside>
+
+    <main id="map-wrap">
+      <div id="map"></div>
+      <button id="btn-3d" title="Toggle 3D terrain view — tilt with right-drag or the pitch control">3D view</button>
+    </main>
+
+    <aside id="preview-panel">
+      <div class="panel-head">
+        <h2>3D preview</h2>
+        <label class="check-row"><input type="checkbox" id="wireframe-toggle"><span>Wireframe</span></label>
+        <button id="btn-close-preview" class="ghost" title="Close">✕</button>
+      </div>
+      <canvas id="preview-canvas"></canvas>
+      <div id="stats" class="stats"></div>
+      <div class="export-grid">
+        <button class="export-btn primary" data-format="stl-binary" disabled>STL (binary)</button>
+        <button class="export-btn" data-format="stl-ascii" disabled>STL (ASCII)</button>
+        <button class="export-btn" data-format="3mf" disabled>3MF</button>
+        <button class="export-btn" data-format="obj" disabled>OBJ</button>
+        <button class="export-btn" data-format="ply" disabled>PLY</button>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
