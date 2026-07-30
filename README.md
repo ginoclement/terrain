@@ -40,6 +40,9 @@ modules and fetches map data — any static server is fine.)
    - **Import**: load a **GeoJSON** polygon (e.g. a country or county
      boundary) as the cutout shape, or a **GPX** track to emboss a hiking
      route as a raised line on the model.
+   - **Custom fonts**: upload any TTF/OTF/WOFF file for the letters tool.
+   - **Profile tool**: drag a line to see its elevation cross-section (with
+     total distance and climb) before committing to a model.
 3. **Generate** — pick grid detail, model size, vertical exaggeration, and
    base thickness, then generate. The app fetches elevation data, carves the
    selection, and shows an orbitable 3D preview with model dimensions,
@@ -54,17 +57,40 @@ modules and fetches map data — any static server is fine.)
      coarse ETOPO1 depths.
    - **Contour terraces** — quantizes elevation into discrete steps for a
      laser-cut topographic-model look.
+   - **Rivers (OSM)** — fetches rivers, streams, and canals from
+     OpenStreetMap for the selected area and embosses (raised) or engraves
+     (recessed) them into the surface.
+   - **Earth curvature** — applies the true spherical drop-off from the
+     selection center (noticeable on selections larger than ~100 km).
+   - **Base engraving** — engraves the center coordinates and scale ratio
+     into the underside, mirrored so it reads correctly when flipped over.
 4. **Export** — binary STL (recommended), ASCII STL, 3MF, OBJ, or PLY. Units
    are millimeters; models are watertight solids with a flat base, ready to
-   slice. Advanced options:
+   slice. Flat regions (water, terraces, baseplates, the underside) are
+   automatically decimated with watertight center-fans, cutting triangle
+   counts dramatically. More formats and options:
+   - **3MF (color)** — per-triangle elevation-band colors (bathymetric blues
+     below sea level, hypsometric tints above) for multi-material printers
+     like Bambu/Prusa XL.
+   - **GLB (textured)** — binary glTF with Esri satellite imagery draped
+     over the terrain, for renders or full-color printing services.
    - **Split into tiles** (up to 4×4) — each tile is a separate watertight
-     STL in a ZIP; adjacent tiles mate along straight cut faces for printing
-     large models in pieces.
+     STL in a ZIP. With **interlocking tabs** on (default), puzzle-style
+     tabs key the tiles together in-plane (zero designed clearance — a
+     light sanding pass may be needed); switch it off for straight glue
+     faces.
    - **Two-piece split at an elevation** — a lower and an upper piece;
      print them in different colors and stack the flat-bottomed upper piece
      on the lower one (e.g. white above the snow line).
-5. **Share** — the Share link button copies a URL that restores your view,
+5. **Batch** — queue several selections (each remembers the settings it was
+   queued with) and export them all as one ZIP of STLs.
+6. **Share** — the Share link button copies a URL that restores your view,
    selection, and settings.
+
+The app is an installable PWA: the shell and libraries are cached by a
+service worker (app updates still land immediately — the shell is
+network-first), and recently viewed map/DEM tiles are kept in a bounded
+offline cache.
 
 The sidebar and the 3D preview panel are resizable — drag the divider next
 to either one; sizes persist across visits.
@@ -79,6 +105,7 @@ Switch sources in the sidebar — they all feed the same pipeline:
 | **MapTiler Terrain-RGB v2** | Global, up to zoom 12 | Free key from [maptiler.com](https://www.maptiler.com/) |
 | **USGS 3DEP ImageServer** | United States only, down to ~1 m | No |
 | **NOAA ETOPO 2022** | Global land + real ocean bathymetry (GEBCO-based, ~460 m; finer near US coasts) | No |
+| **EMODnet Bathymetry** | European seas, ~115 m seafloor detail (marine only; land reads 0) | No |
 | **Open-Meteo elevation API** | Copernicus GLO-90 DEM (~90 m), point queries | No (use grid detail ≤ 128) |
 
 The map's 3D terrain and hillshade are driven by the same AWS Terrarium DEM
@@ -103,20 +130,21 @@ three.js, fflate) load from CDN.
 ```
 index.html         page layout & CDN imports
 css/style.css      styling
-js/app.js          UI wiring, generate/export pipeline, share links, imports
+js/app.js          UI wiring, model pipeline, batch, share links, imports
 js/mapview.js      basemaps, hillshade, 3D terrain, route + text overlays
-js/selection.js    drawing tools, rotation, mask/route rasterization
+js/selection.js    drawing tools, rotation, profile tool, mask rasterization
 js/elevation.js    elevation source registry & fetching/decoding
-js/mesh.js         watertight solid construction (pure, node-testable)
-js/heightops.js    smoothing/water/contours/tiles/splits (pure, node-testable)
-js/exporters.js    STL/OBJ/PLY/3MF writers (pure, node-testable)
+js/mesh.js         watertight solid construction + decimation (pure, node-testable)
+js/heightops.js    smoothing/water/contours/tiles/interlocks/splits (pure)
+js/exporters.js    STL/OBJ/PLY/3MF/color-3MF/GLB writers (pure, node-testable)
+sw.js              service worker (offline shell + tile cache)
 tests/             geometry, grid-ops, and exporter checks
 ```
 
 Run the tests with:
 
 ```bash
-node tests/test-mesh.mjs && node tests/test-heightops.mjs
+for t in tests/test-*.mjs; do node "$t"; done
 ```
 
 They verify the generated meshes are watertight (every edge shared by exactly
@@ -141,5 +169,7 @@ and restrict any MapTiler key to your domain in the MapTiler dashboard.
 Map data © OpenStreetMap contributors; OpenTopoMap (CC-BY-SA); imagery ©
 Esri; USGS The National Map; © CARTO. Terrain tiles from the Mapzen/AWS Open
 Data Terrain Tiles program (3DEP, SRTM, GMTED2010, ETOPO1); MapTiler
-elevation © MapTiler; Copernicus GLO-90 DEM via Open-Meteo. Geocoding by
+elevation © MapTiler; Copernicus GLO-90 DEM via Open-Meteo; bathymetry ©
+EMODnet Bathymetry Consortium and reproduced from the GEBCO Grid; waterway
+data © OpenStreetMap contributors via the Overpass API. Geocoding by
 Nominatim/OpenStreetMap. Please respect each provider's usage policies.

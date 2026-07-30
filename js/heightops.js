@@ -106,26 +106,107 @@ export function tileRanges(W, H, cols, rows) {
 }
 
 /** Extract a subgrid (inclusive range) from grid arrays for one tile. */
-export function extractSubgrid({ topZ, mask, xs, ys, width: W }, { i0, i1, j0, j1 }) {
+export function extractSubgrid({ topZ, botZ = null, mask, xs, ys, width: W }, { i0, i1, j0, j1 }) {
   const w = i1 - i0 + 1;
   const h = j1 - j0 + 1;
   const subTop = new Float32Array(w * h);
+  const subBot = botZ ? new Float32Array(w * h) : null;
   const subMask = new Uint8Array(w * h);
   for (let j = 0; j < h; j++) {
     for (let i = 0; i < w; i++) {
       const src = i0 + i + (j0 + j) * W;
-      subTop[i + j * w] = topZ[src];
-      subMask[i + j * w] = mask[src];
+      const dst = i + j * w;
+      subTop[dst] = topZ[src];
+      if (subBot) subBot[dst] = botZ[src];
+      subMask[dst] = mask[src];
     }
   }
   return {
     width: w,
     height: h,
     topZ: subTop,
+    botZ: subBot,
     mask: subMask,
     xs: xs.slice(i0, i1 + 1),
     ys: ys.slice(j0, j1 + 1),
   };
+}
+
+/**
+ * Partition the cell grid into cols×rows regions whose boundaries carry
+ * puzzle-style interlocking tabs (a rectangular neck with a wider head), so
+ * separately printed tiles key into each other in-plane. Because every tile is
+ * built over the full grid with its own cell filter, mating walls share the
+ * exact same vertices and fit together with zero designed clearance (a light
+ * sanding pass may be needed for a snug fit).
+ *
+ * @returns {Uint8Array[]} one cell filter per tile, row-major by (row, col);
+ *   filters are a strict partition of all cells.
+ */
+export function interlockedTileFilters(cellW, cellH, cols, rows) {
+  const region = new Int16Array(cellW * cellH);
+  const colOf = new Int16Array(cellW);
+  const rowOf = new Int16Array(cellH);
+  const colEdge = (c) => Math.round((c * cellW) / cols);
+  const rowEdge = (r) => Math.round((r * cellH) / rows);
+  for (let c = 0; c < cols; c++) colOf.fill(c, colEdge(c), colEdge(c + 1));
+  for (let r = 0; r < rows; r++) rowOf.fill(r, rowEdge(r), rowEdge(r + 1));
+  for (let j = 0; j < cellH; j++) {
+    for (let i = 0; i < cellW; i++) region[i + j * cellW] = rowOf[j] * cols + colOf[i];
+  }
+
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const assign = (iA, iB, jA, jB, t) => {
+    for (let j = clamp(jA, 0, cellH - 1); j <= clamp(jB, 0, cellH - 1); j++) {
+      for (let i = clamp(iA, 0, cellW - 1); i <= clamp(iB, 0, cellW - 1); i++) {
+        region[i + j * cellW] = t;
+      }
+    }
+  };
+
+  // One tab per shared edge segment, direction alternating for balance.
+  const tabDepth = clamp(Math.round(Math.min(cellW / cols, cellH / rows) / 8), 2, 12);
+  for (let c = 1; c < cols; c++) {
+    const cut = colEdge(c);
+    for (let r = 0; r < rows; r++) {
+      const jm = Math.floor((rowEdge(r) + rowEdge(r + 1)) / 2);
+      const neck = clamp(Math.round((rowEdge(r + 1) - rowEdge(r)) / 6), 2, 14);
+      const head = neck * 2;
+      const left = r * cols + (c - 1), right = r * cols + c;
+      if ((c + r) % 2 === 0) {
+        // left tile protrudes right
+        assign(cut, cut + tabDepth - 1, jm - (neck >> 1), jm + (neck >> 1), left);
+        assign(cut + tabDepth, cut + 2 * tabDepth - 1, jm - (head >> 1), jm + (head >> 1), left);
+      } else {
+        assign(cut - tabDepth, cut - 1, jm - (neck >> 1), jm + (neck >> 1), right);
+        assign(cut - 2 * tabDepth, cut - tabDepth - 1, jm - (head >> 1), jm + (head >> 1), right);
+      }
+    }
+  }
+  for (let r = 1; r < rows; r++) {
+    const cut = rowEdge(r);
+    for (let c = 0; c < cols; c++) {
+      const im = Math.floor((colEdge(c) + colEdge(c + 1)) / 2);
+      const neck = clamp(Math.round((colEdge(c + 1) - colEdge(c)) / 6), 2, 14);
+      const head = neck * 2;
+      const below = (r - 1) * cols + c, above = r * cols + c;
+      if ((r + c) % 2 === 0) {
+        assign(im - (neck >> 1), im + (neck >> 1), cut, cut + tabDepth - 1, below);
+        assign(im - (head >> 1), im + (head >> 1), cut + tabDepth, cut + 2 * tabDepth - 1, below);
+      } else {
+        assign(im - (neck >> 1), im + (neck >> 1), cut - tabDepth, cut - 1, above);
+        assign(im - (head >> 1), im + (head >> 1), cut - 2 * tabDepth, cut - tabDepth - 1, above);
+      }
+    }
+  }
+
+  const filters = [];
+  for (let t = 0; t < cols * rows; t++) {
+    const f = new Uint8Array(cellW * cellH);
+    for (let c = 0; c < region.length; c++) f[c] = region[c] === t ? 1 : 0;
+    filters.push(f);
+  }
+  return filters;
 }
 
 /**

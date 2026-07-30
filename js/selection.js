@@ -115,11 +115,11 @@ export function renderTextCanvas(text, font, W, H, fillStyle = '#000') {
 }
 
 /**
- * Rasterize a lng/lat polyline into a W×H boolean mask over bbox (row 0 =
- * south), with the line drawn `lineWidthPx` samples wide. Used to emboss
- * GPX routes onto the model.
+ * Rasterize lng/lat polylines into a W×H boolean mask over bbox (row 0 =
+ * south), with lines drawn `lineWidthPx` samples wide. Used to emboss GPX
+ * routes and OSM waterways onto the model.
  */
-export function rasterizeRouteMask(points, bbox, W, H, lineWidthPx = 2) {
+export function rasterizePolylines(lines, bbox, W, H, lineWidthPx = 2) {
   const [w, s, e, n] = bbox;
   const canvas = document.createElement('canvas');
   canvas.width = W;
@@ -130,12 +130,14 @@ export function rasterizeRouteMask(points, bbox, W, H, lineWidthPx = 2) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.beginPath();
-  let started = false;
-  for (const [lon, lat] of points) {
-    const x = ((lon - w) / (e - w || 1e-12)) * (W - 1);
-    const y = (1 - (lat - s) / (n - s || 1e-12)) * (H - 1);
-    if (started) ctx.lineTo(x, y);
-    else { ctx.moveTo(x, y); started = true; }
+  for (const points of lines) {
+    let started = false;
+    for (const [lon, lat] of points) {
+      const x = ((lon - w) / (e - w || 1e-12)) * (W - 1);
+      const y = (1 - (lat - s) / (n - s || 1e-12)) * (H - 1);
+      if (started) ctx.lineTo(x, y);
+      else { ctx.moveTo(x, y); started = true; }
+    }
   }
   ctx.stroke();
   const data = ctx.getImageData(0, 0, W, H).data;
@@ -144,6 +146,103 @@ export function rasterizeRouteMask(points, bbox, W, H, lineWidthPx = 2) {
     const row = H - 1 - j;
     for (let i = 0; i < W; i++) {
       mask[i + j * W] = data[(i + row * W) * 4 + 3] > 127 ? 1 : 0;
+    }
+  }
+  return mask;
+}
+
+/** @deprecated single-line wrapper kept for readability at call sites */
+export function rasterizeRouteMask(points, bbox, W, H, lineWidthPx = 2) {
+  return rasterizePolylines([points], bbox, W, H, lineWidthPx);
+}
+
+/** Rebuild a derived selection object from its toJSON() form. Pure. */
+export function hydrateSelection(data) {
+  if (!data) return null;
+  const sel = { shape: data.shape, rotationDeg: data.rot || 0 };
+  switch (data.shape) {
+    case 'rect':
+    case 'square':
+      sel.rect0 = data.rect0;
+      break;
+    case 'text':
+      sel.rect0 = data.rect0;
+      sel.text = data.text;
+      sel.font = data.font;
+      break;
+    case 'circle':
+    case 'hex':
+      sel.center = data.center;
+      sel.radiusM = data.r;
+      break;
+    case 'polygon':
+      sel.basePoints = data.points;
+      break;
+    default:
+      return null;
+  }
+  return derive(sel);
+}
+
+/**
+ * Rasterize a selection into a W×H boolean mask over its bbox. Pure —
+ * usable for batch export without touching the live SelectionManager.
+ * Row j = 0 is the SOUTH edge (matching the elevation grid convention).
+ */
+export function buildSelectionMask(sel, W, H) {
+  if (!sel) throw new Error('No selection');
+  const mask = new Uint8Array(W * H);
+  const [w, s, e, n] = sel.bbox;
+  const rot = sel.rotationDeg || 0;
+
+  if ((sel.shape === 'rect' || sel.shape === 'square') && !rot) {
+    mask.fill(1);
+    return mask;
+  }
+  if (sel.shape === 'text') {
+    // Render the text once over the unrotated rect0, then look samples up
+    // by inverse-rotating them into that frame.
+    const [w0, s0, e0, n0] = sel.rect0;
+    const dims0 = bboxDimensionsMeters(sel.rect0);
+    const cw = 1024;
+    const ch = Math.max(64, Math.min(2048, Math.round((cw * dims0.height) / Math.max(1, dims0.width))));
+    const canvas = renderTextCanvas(sel.text, sel.font, cw, ch);
+    const data = canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
+    for (let j = 0; j < H; j++) {
+      const lat = s + ((n - s) * j) / (H - 1);
+      for (let i = 0; i < W; i++) {
+        const lon = w + ((e - w) * i) / (W - 1);
+        const [lon0, lat0] = rotatePoint([lon, lat], sel.center, -rot);
+        if (lon0 < w0 || lon0 > e0 || lat0 < s0 || lat0 > n0) continue;
+        const px = Math.round(((lon0 - w0) / (e0 - w0)) * (cw - 1));
+        const py = Math.round((1 - (lat0 - s0) / (n0 - s0)) * (ch - 1));
+        mask[i + j * W] = data[(px + py * cw) * 4 + 3] > 127 ? 1 : 0;
+      }
+    }
+    return mask;
+  }
+  if (sel.shape === 'circle') {
+    const [clon, clat] = sel.center;
+    const mLon = mPerDegLon(clat);
+    const r2 = sel.radiusM * sel.radiusM;
+    for (let j = 0; j < H; j++) {
+      const lat = s + ((n - s) * j) / (H - 1);
+      const dy = (lat - clat) * M_PER_DEG_LAT;
+      for (let i = 0; i < W; i++) {
+        const lon = w + ((e - w) * i) / (W - 1);
+        const dx = (lon - clon) * mLon;
+        mask[i + j * W] = dx * dx + dy * dy <= r2 ? 1 : 0;
+      }
+    }
+    return mask;
+  }
+  // rect/square (rotated), hex, polygon: point-in-ring test
+  const ring = sel.ring;
+  for (let j = 0; j < H; j++) {
+    const lat = s + ((n - s) * j) / (H - 1);
+    for (let i = 0; i < W; i++) {
+      const lon = w + ((e - w) * i) / (W - 1);
+      mask[i + j * W] = pointInRing(lon, lat, ring) ? 1 : 0;
     }
   }
   return mask;
@@ -189,10 +288,11 @@ function derive(sel) {
 }
 
 export class SelectionManager {
-  constructor(map, { onSelectionChange, onToolChange } = {}) {
+  constructor(map, { onSelectionChange, onToolChange, onProfileLine } = {}) {
     this.map = map;
     this.onSelectionChange = onSelectionChange || (() => {});
     this.onToolChange = onToolChange || (() => {});
+    this.onProfileLine = onProfileLine || (() => {});
     this.tool = null;
     this.selection = null;
     this.textOptions = { text: 'A', font: '"Archivo Black", sans-serif' };
@@ -242,7 +342,15 @@ export class SelectionManager {
       const shape = this._dragShape(this._drag.start, [ev.lngLat.lng, ev.lngLat.lat]);
       this._drag = null;
       this._clearDraft();
-      if (shape && this._shapeBigEnough(shape)) {
+      if (!shape) return;
+      if (shape.shape === 'profile') {
+        if (localDistance(shape.line[0], shape.line[1]) > 30) {
+          this.onProfileLine(shape.line[0], shape.line[1]);
+          this.setTool(null);
+        }
+        return;
+      }
+      if (this._shapeBigEnough(shape)) {
         this._setSelection(shape);
         this.setTool(null);
       }
@@ -363,30 +471,8 @@ export class SelectionManager {
   }
 
   fromJSON(data) {
-    if (!data) return;
-    const sel = { shape: data.shape, rotationDeg: data.rot || 0 };
-    switch (data.shape) {
-      case 'rect':
-      case 'square':
-        sel.rect0 = data.rect0;
-        break;
-      case 'text':
-        sel.rect0 = data.rect0;
-        sel.text = data.text;
-        sel.font = data.font;
-        break;
-      case 'circle':
-      case 'hex':
-        sel.center = data.center;
-        sel.radiusM = data.r;
-        break;
-      case 'polygon':
-        sel.basePoints = data.points;
-        break;
-      default:
-        return;
-    }
-    this._setSelection(derive(sel));
+    const sel = hydrateSelection(data);
+    if (sel) this._setSelection(sel);
   }
 
   // -- selection moving --------------------------------------------------
@@ -456,6 +542,9 @@ export class SelectionManager {
     if (tool === 'hex') {
       return derive({ shape: 'hex', center: a, radiusM: localDistance(a, b), rotationDeg: 0 });
     }
+    if (tool === 'profile') {
+      return { shape: 'profile', line: [a, b] };
+    }
     return null;
   }
 
@@ -510,6 +599,9 @@ export class SelectionManager {
   _updateDraft(shape) {
     const features = [];
     if (shape) {
+      if (shape.shape === 'profile') {
+        features.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: shape.line } });
+      }
       if (shape.ring && shape.ring.length >= 3) features.push(polygonFeature(shape.ring));
       if (shape.draft) {
         for (const p of shape.points.slice(0, -1)) {
@@ -531,62 +623,6 @@ export class SelectionManager {
    * Row j = 0 is the SOUTH edge (matching the elevation grid convention).
    */
   buildMask(W, H) {
-    const sel = this.selection;
-    if (!sel) throw new Error('No selection');
-    const mask = new Uint8Array(W * H);
-    const [w, s, e, n] = sel.bbox;
-    const rot = sel.rotationDeg || 0;
-
-    if ((sel.shape === 'rect' || sel.shape === 'square') && !rot) {
-      mask.fill(1);
-      return mask;
-    }
-    if (sel.shape === 'text') {
-      // Render the text once over the unrotated rect0, then look samples up
-      // by inverse-rotating them into that frame.
-      const [w0, s0, e0, n0] = sel.rect0;
-      const dims0 = bboxDimensionsMeters(sel.rect0);
-      const cw = 1024;
-      const ch = Math.max(64, Math.min(2048, Math.round((cw * dims0.height) / Math.max(1, dims0.width))));
-      const canvas = renderTextCanvas(sel.text, sel.font, cw, ch);
-      const data = canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
-      for (let j = 0; j < H; j++) {
-        const lat = s + ((n - s) * j) / (H - 1);
-        for (let i = 0; i < W; i++) {
-          const lon = w + ((e - w) * i) / (W - 1);
-          const [lon0, lat0] = rotatePoint([lon, lat], sel.center, -rot);
-          if (lon0 < w0 || lon0 > e0 || lat0 < s0 || lat0 > n0) continue;
-          const px = Math.round(((lon0 - w0) / (e0 - w0)) * (cw - 1));
-          const py = Math.round((1 - (lat0 - s0) / (n0 - s0)) * (ch - 1));
-          mask[i + j * W] = data[(px + py * cw) * 4 + 3] > 127 ? 1 : 0;
-        }
-      }
-      return mask;
-    }
-    if (sel.shape === 'circle') {
-      const [clon, clat] = sel.center;
-      const mLon = mPerDegLon(clat);
-      const r2 = sel.radiusM * sel.radiusM;
-      for (let j = 0; j < H; j++) {
-        const lat = s + ((n - s) * j) / (H - 1);
-        const dy = (lat - clat) * M_PER_DEG_LAT;
-        for (let i = 0; i < W; i++) {
-          const lon = w + ((e - w) * i) / (W - 1);
-          const dx = (lon - clon) * mLon;
-          mask[i + j * W] = dx * dx + dy * dy <= r2 ? 1 : 0;
-        }
-      }
-      return mask;
-    }
-    // rect/square (rotated), hex, polygon: point-in-ring test
-    const ring = sel.ring;
-    for (let j = 0; j < H; j++) {
-      const lat = s + ((n - s) * j) / (H - 1);
-      for (let i = 0; i < W; i++) {
-        const lon = w + ((e - w) * i) / (W - 1);
-        mask[i + j * W] = pointInRing(lon, lat, ring) ? 1 : 0;
-      }
-    }
-    return mask;
+    return buildSelectionMask(this.selection, W, H);
   }
 }

@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Terrain → STL Generator</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#1c222c">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Bungee&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
@@ -60,6 +62,7 @@
           <button class="tool-btn" data-tool="hex" title="Drag from center outwards">⬡ Hexagon</button>
           <button class="tool-btn" data-tool="polygon" title="Click points; click the first point or double-click to close">⬠ Polygon</button>
           <button class="tool-btn" data-tool="text" title="Type text below, then drag a box on the map">A Letters</button>
+          <button class="tool-btn" data-tool="profile" title="Drag a line to see its elevation cross-section">⟋ Profile</button>
         </div>
         <p id="polygon-hint" class="hint" style="display:none">Click to add points; click the first point (or double-click) to close. Esc cancels.</p>
         <div class="field-row">
@@ -75,6 +78,13 @@
             <option value='Georgia, serif'>Georgia (serif)</option>
             <option value='monospace'>Monospace</option>
           </select>
+        </div>
+        <div class="field-row">
+          <label for="font-upload-btn">Custom font</label>
+          <div class="import-controls">
+            <input type="file" id="font-upload" accept=".ttf,.otf,.woff,.woff2" hidden>
+            <button id="font-upload-btn" title="Upload a TTF/OTF/WOFF font for the letters tool">Upload…</button>
+          </div>
         </div>
         <div class="field-row">
           <label for="rotation">Rotation <span id="rotation-value">0°</span></label>
@@ -133,6 +143,22 @@
           <span>Emboss route, raised (mm):</span>
           <input type="number" id="route-height" value="0.6" min="0.1" max="5" step="0.1" class="inline-num">
         </label>
+        <div class="field-row">
+          <label for="rivers-mode" title="Fetches rivers, streams, and canals from OpenStreetMap for the selected area">Rivers (OSM)</label>
+          <select id="rivers-mode">
+            <option value="off" selected>Off</option>
+            <option value="emboss">Emboss (raised)</option>
+            <option value="engrave">Engrave (recessed)</option>
+          </select>
+        </div>
+        <label class="check-row">
+          <input type="checkbox" id="curvature-toggle">
+          <span title="Applies true spherical drop-off from the selection center — noticeable on selections larger than ~100 km">Earth curvature</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="engrave-toggle">
+          <span title="Engraves coordinates and scale into the underside, mirrored to read correctly when flipped">Engrave info on base</span>
+        </label>
       </section>
 
       <section>
@@ -165,18 +191,31 @@
       <section>
         <h2>5 · Advanced export</h2>
         <div class="field-row">
-          <label title="Split the model into a grid of separately printable tiles that mate along straight cuts">Split into tiles</label>
+          <label title="Split the model into a grid of separately printable tiles">Split into tiles</label>
           <span class="tile-selects">
             <select id="tile-cols"><option>1</option><option>2</option><option>3</option><option>4</option></select>
             ×
             <select id="tile-rows"><option>1</option><option>2</option><option>3</option><option>4</option></select>
           </span>
         </div>
+        <label class="check-row">
+          <input type="checkbox" id="interlock-toggle" checked>
+          <span title="Puzzle-style tabs on the cut faces so tiles key into each other (zero clearance — a light sanding may be needed)">Interlocking tabs</span>
+        </label>
         <div class="field-row">
           <label for="split-elev" title="0 = off. Splits into a lower and upper piece at this real-world elevation — print each in a different color and stack them">Two-piece split at (m)</label>
           <input type="number" id="split-elev" value="0" min="0" step="50">
         </div>
         <p class="hint">These add ZIP download options in the preview panel after generating.</p>
+      </section>
+
+      <section>
+        <h2>6 · Batch</h2>
+        <div class="row-split">
+          <button id="btn-batch-add" disabled title="Queue the current selection with the current settings">Add current selection</button>
+          <button id="btn-batch-export" class="ghost" disabled title="Generate every queued model and download one ZIP of STLs">Export all</button>
+        </div>
+        <div id="batch-list"></div>
       </section>
     </aside>
 
@@ -185,6 +224,14 @@
     <main id="map-wrap">
       <div id="map"></div>
       <button id="btn-3d" title="Toggle 3D terrain view — tilt with right-drag or the pitch control">3D view</button>
+      <div id="profile-panel" style="display:none">
+        <div class="panel-head">
+          <h2>Elevation profile</h2>
+          <span id="profile-stats" class="hint"></span>
+          <button id="btn-close-profile" class="ghost" title="Close">✕</button>
+        </div>
+        <canvas id="profile-canvas" width="800" height="180"></canvas>
+      </div>
     </main>
 
     <div id="resize-preview" class="resizer" title="Drag to resize" style="display:none"></div>
@@ -203,6 +250,8 @@
         <button class="export-btn" data-format="3mf" disabled>3MF</button>
         <button class="export-btn" data-format="obj" disabled>OBJ</button>
         <button class="export-btn" data-format="ply" disabled>PLY</button>
+        <button class="export-btn" data-format="3mf-color" disabled title="Per-triangle elevation-band colors for multi-material printers">3MF (color)</button>
+        <button class="export-btn" data-format="glb" disabled title="Binary glTF with satellite imagery draped on top — for renders and full-color printing">GLB (textured)</button>
         <button class="export-btn" data-format="tiles" disabled title="Requires 'Split into tiles' > 1×1">STL tiles (ZIP)</button>
         <button class="export-btn" data-format="two-piece" disabled title="Requires a two-piece split elevation">Two-piece STL (ZIP)</button>
       </div>

@@ -179,6 +179,35 @@ button.ghost { background: transparent; }
 }
 #btn-3d.active { border-color: var(--accent-2); color: var(--accent-2); }
 
+#profile-panel {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 28px;
+  z-index: 5;
+  background: rgba(28, 34, 44, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+}
+#profile-panel .panel-head { border-bottom: none; padding: 8px 12px 0; }
+#profile-panel canvas { display: block; width: 100%; height: 150px; padding: 4px 12px 10px; box-sizing: border-box; }
+
+#batch-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.batch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+.batch-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-item button { padding: 1px 7px; }
+
 #preview-panel {
   width: 0;
   overflow: hidden;
