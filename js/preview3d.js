@@ -5,8 +5,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// Hypsometric-ish gradient from low to high.
-const GRADIENT = [
+// Hypsometric-ish gradient from low to high land.
+const LAND_GRADIENT = [
   [0.0, [0x2c, 0x6e, 0x49]],
   [0.3, [0x8a, 0xb1, 0x7c]],
   [0.55, [0xc9, 0xb2, 0x8f]],
@@ -15,10 +15,17 @@ const GRADIENT = [
   [1.0, [0xff, 0xff, 0xff]],
 ];
 
-function gradientColor(t) {
-  for (let k = 1; k < GRADIENT.length; k++) {
-    const [t1, c1] = GRADIENT[k];
-    const [t0, c0] = GRADIENT[k - 1];
+// Bathymetric gradient from deepest to the waterline.
+const SEA_GRADIENT = [
+  [0.0, [0x0a, 0x19, 0x44]],
+  [0.55, [0x16, 0x4c, 0x8c]],
+  [1.0, [0x7e, 0xc4, 0xda]],
+];
+
+function gradientColor(stops, t) {
+  for (let k = 1; k < stops.length; k++) {
+    const [t1, c1] = stops[k];
+    const [t0, c0] = stops[k - 1];
     if (t <= t1) {
       const f = (t - t0) / (t1 - t0 || 1);
       return [
@@ -74,7 +81,11 @@ export class TerrainPreview {
     this.renderer.render(this.scene, this.camera);
   }
 
-  setMesh(positions, indices) {
+  /**
+   * @param {?number} seaZ model-space z of the waterline; vertices below it
+   *   get bathymetric blues instead of the land gradient. null = all land.
+   */
+  setMesh(positions, indices, seaZ = null) {
     if (this.mesh) {
       this.group.remove(this.mesh);
       this.mesh.geometry.dispose();
@@ -92,11 +103,17 @@ export class TerrainPreview {
       if (positions[v] < minZ) minZ = positions[v];
       if (positions[v] > maxZ) maxZ = positions[v];
     }
-    const span = maxZ - minZ || 1;
     const colors = new Float32Array(positions.length);
+    const hasSea = seaZ !== null && seaZ > minZ;
+    const landBase = hasSea ? Math.min(seaZ, maxZ) : minZ;
+    const landSpan = maxZ - landBase || 1;
+    const seaSpan = hasSea ? seaZ - minZ || 1 : 1;
     for (let v = 0; v < positions.length; v += 3) {
-      const [r, g, b] = gradientColor((positions[v + 2] - minZ) / span);
-      colors[v] = r; colors[v + 1] = g; colors[v + 2] = b;
+      const z = positions[v + 2];
+      const rgb = hasSea && z < seaZ
+        ? gradientColor(SEA_GRADIENT, (z - minZ) / seaSpan)
+        : gradientColor(LAND_GRADIENT, (z - landBase) / landSpan);
+      colors[v] = rgb[0]; colors[v + 1] = rgb[1]; colors[v + 2] = rgb[2];
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 

@@ -224,6 +224,10 @@ function syncSourceUI() {
 }
 sourceSelect.addEventListener('change', syncSourceUI);
 syncSourceUI();
+
+$('water-mode').addEventListener('change', () => {
+  $('water-level-row').style.display = $('water-mode').value === 'flatten' ? 'flex' : 'none';
+});
 $('maptiler-key').value = localStorage.getItem('maptilerKey') || '';
 $('maptiler-key').addEventListener('change', (ev) => localStorage.setItem('maptilerKey', ev.target.value.trim()));
 
@@ -274,7 +278,7 @@ function collectState() {
       base: $('base-height').value,
       src: sourceSelect.value,
       smooth: $('smoothing').value,
-      water: [$('water-toggle').checked ? 1 : 0, $('water-level').value],
+      water: [$('water-mode').value === 'flatten' ? 1 : 0, $('water-level').value],
       contour: $('contour-step').value,
       plate: [$('plate-toggle').checked ? 1 : 0, $('plate-height').value],
       tiles: [$('tile-cols').value, $('tile-rows').value],
@@ -293,7 +297,8 @@ function applyState(st) {
       $('base-height').value = st.set.base;
       if (ELEVATION_SOURCES[st.set.src]) sourceSelect.value = st.set.src;
       $('smoothing').value = st.set.smooth ?? '0';
-      $('water-toggle').checked = !!(st.set.water?.[0]);
+      $('water-mode').value = st.set.water?.[0] ? 'flatten' : 'bathy';
+      $('water-level-row').style.display = st.set.water?.[0] ? 'flex' : 'none';
       $('water-level').value = st.set.water?.[1] ?? 0;
       $('contour-step').value = st.set.contour ?? 0;
       $('plate-toggle').checked = !!(st.set.plate?.[0]);
@@ -463,7 +468,7 @@ $('btn-generate').addEventListener('click', async () => {
     const baseMM = Math.max(0.4, parseFloat($('base-height').value) || 2);
     const sourceId = sourceSelect.value;
     const smoothRadius = parseInt($('smoothing').value, 10) || 0;
-    const waterOn = $('water-toggle').checked;
+    const waterOn = $('water-mode').value === 'flatten';
     const waterLevel = parseFloat($('water-level').value) || 0;
     const contourStep = Math.max(0, parseFloat($('contour-step').value) || 0);
     const plateOn = $('plate-toggle').checked;
@@ -536,7 +541,9 @@ $('btn-generate').addEventListener('click', async () => {
     lastMesh = { ...mesh, name: `terrain-${sel.shape}` };
     lastGrid = { gridW, gridH, topZ: finalTop, mask, xs, ys, minElev, zPerMeter, baseMM };
 
-    preview.setMesh(mesh.positions, mesh.indices);
+    // In bathymetry mode, tint below-sea-level terrain blue in the preview.
+    const seaZ = !waterOn && minElev < 0 ? baseMM + (0 - minElev) * zPerMeter : null;
+    preview.setMesh(mesh.positions, mesh.indices, seaZ);
     setPreviewOpen(true);
 
     const volumeCm3 = meshVolume(mesh.positions, mesh.indices) / 1000;
