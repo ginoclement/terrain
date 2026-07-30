@@ -45,6 +45,15 @@ export const ELEVATION_SOURCES = {
     url: 'https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_global_mosaic/ImageServer/exportImage',
     attribution: 'Bathymetry/Elevation: NOAA NCEI ETOPO 2022, GEBCO',
   },
+  emodnet: {
+    name: 'EMODnet (EU seas, high-res bathymetry)',
+    description: 'EMODnet Digital Bathymetry (~115 m) via WCS — the best seafloor detail for European waters. Marine coverage only: land and non-European areas come back flat at 0 m. Free, no key.',
+    type: 'wcs',
+    needsKey: false,
+    url: 'https://ows.emodnet-bathymetry.eu/wcs',
+    coverage: 'emodnet:mean',
+    attribution: 'Bathymetry © EMODnet Bathymetry Consortium',
+  },
   openmeteo: {
     name: 'Open-Meteo (Copernicus GLO-90)',
     description: 'Copernicus GLO-90 DEM via the Open-Meteo elevation API. Free, no key. Coarser (~90 m) and slower — best for grid sizes ≤ 128.',
@@ -237,6 +246,47 @@ async function fetchImageServerGrid(source, bbox, gridW, gridH, { onProgress } =
   return { elev, zoom: null };
 }
 
+// OGC WCS 1.0 GetCoverage returning a float GeoTIFF (EMODnet bathymetry).
+async function fetchWCSGrid(source, bbox, gridW, gridH, { onProgress } = {}) {
+  onProgress?.(`Requesting ${source.name} coverage…`);
+  if (!geotiffModule) {
+    geotiffModule = await import('https://cdn.jsdelivr.net/npm/geotiff@2.1.3/+esm');
+  }
+  const [w, s, e, n] = bbox;
+  const params = new URLSearchParams({
+    service: 'WCS',
+    version: '1.0.0',
+    request: 'GetCoverage',
+    coverage: source.coverage,
+    crs: 'EPSG:4326',
+    bbox: `${w},${s},${e},${n}`,
+    width: String(gridW),
+    height: String(gridH),
+    format: 'GeoTIFF',
+  });
+  const resp = await fetch(`${source.url}?${params}`);
+  if (!resp.ok) throw new Error(`${source.name} request failed (${resp.status})`);
+  const buf = await resp.arrayBuffer();
+  onProgress?.('Decoding GeoTIFF…');
+  let raster;
+  try {
+    const tiff = await geotiffModule.fromArrayBuffer(buf);
+    const image = await tiff.getImage();
+    [raster] = await image.readRasters();
+  } catch {
+    throw new Error(`${source.name} returned no usable data — is the selection inside European seas?`);
+  }
+  const elev = new Float32Array(gridW * gridH);
+  for (let j = 0; j < gridH; j++) {
+    const srcRow = (gridH - 1 - j) * gridW; // GeoTIFF row 0 = north
+    for (let i = 0; i < gridW; i++) {
+      const v = raster[srcRow + i];
+      elev[i + j * gridW] = Number.isFinite(v) && v > -12000 && v < 9000 ? v : 0;
+    }
+  }
+  return { elev, zoom: null };
+}
+
 /**
  * Fetch an elevation grid from the chosen source.
  * @returns {Promise<{elev: Float32Array, zoom: ?number}>}
@@ -249,5 +299,6 @@ export async function fetchElevationGrid(sourceId, bbox, gridW, gridH, opts = {}
   }
   if (source.type === 'tiles') return fetchTileGrid(source, bbox, gridW, gridH, opts);
   if (source.type === 'imageserver') return fetchImageServerGrid(source, bbox, gridW, gridH, opts);
+  if (source.type === 'wcs') return fetchWCSGrid(source, bbox, gridW, gridH, opts);
   return fetchApiGrid(bbox, gridW, gridH, opts);
 }

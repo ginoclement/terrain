@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // Hypsometric-ish gradient from low to high land.
-const LAND_GRADIENT = [
+export const LAND_GRADIENT = [
   [0.0, [0x2c, 0x6e, 0x49]],
   [0.3, [0x8a, 0xb1, 0x7c]],
   [0.55, [0xc9, 0xb2, 0x8f]],
@@ -16,13 +16,13 @@ const LAND_GRADIENT = [
 ];
 
 // Bathymetric gradient from deepest to the waterline.
-const SEA_GRADIENT = [
+export const SEA_GRADIENT = [
   [0.0, [0x0a, 0x19, 0x44]],
   [0.55, [0x16, 0x4c, 0x8c]],
   [1.0, [0x7e, 0xc4, 0xda]],
 ];
 
-function gradientColor(stops, t) {
+export function gradientColor(stops, t) {
   for (let k = 1; k < stops.length; k++) {
     const [t1, c1] = stops[k];
     const [t0, c0] = stops[k - 1];

@@ -24,8 +24,7 @@ jobs:
           node-version: 22
       - name: Run geometry & exporter tests
         run: |
-          node tests/test-mesh.mjs
-          node tests/test-heightops.mjs
+          for t in tests/test-*.mjs; do node "$t"; done
 
   deploy:
     needs: test

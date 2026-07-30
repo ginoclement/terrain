@@ -114,6 +114,149 @@ export function toPLY(positions, indices, name = 'terrain') {
 }
 
 /**
+ * Color 3MF: per-triangle colors via core-spec <basematerials>, the most
+ * widely supported route for multi-color slicers (Bambu/Prusa/Orca).
+ *
+ * @param {string[]} palette  hex colors like "#RRGGBB"
+ * @param {Uint8Array|number[]} triMaterial  palette index per triangle
+ * @returns {{[path: string]: string}} files for the caller to zip
+ */
+export function to3MFColorFiles(positions, indices, palette, triMaterial, name = 'terrain') {
+  const f = (x) => +x.toFixed(5);
+  const verts = [];
+  for (let v = 0; v < positions.length; v += 3) {
+    verts.push(`<vertex x="${f(positions[v])}" y="${f(positions[v + 1])}" z="${f(positions[v + 2])}"/>`);
+  }
+  const tris = [];
+  for (let t = 0, k = 0; t < indices.length; t += 3, k++) {
+    tris.push(`<triangle v1="${indices[t]}" v2="${indices[t + 1]}" v3="${indices[t + 2]}" pid="2" p1="${triMaterial[k]}"/>`);
+  }
+  const mats = palette
+    .map((hex, k) => `<base name="band-${k}" displaycolor="${hex}"/>`)
+    .join('');
+  const model =
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n' +
+    ` <metadata name="Title">${name}</metadata>\n` +
+    ' <metadata name="Application">terrain-stl-generator</metadata>\n' +
+    ' <resources>\n' +
+    `  <basematerials id="2">${mats}</basematerials>\n` +
+    `  <object id="1" type="model" name="${name}" pid="2" pindex="0">\n` +
+    '   <mesh>\n' +
+    `    <vertices>${verts.join('')}</vertices>\n` +
+    `    <triangles>${tris.join('')}</triangles>\n` +
+    '   </mesh>\n' +
+    '  </object>\n' +
+    ' </resources>\n' +
+    ' <build><item objectid="1"/></build>\n' +
+    '</model>\n';
+  const base = to3MFFiles(new Float32Array(0), new Uint32Array(0), name);
+  return { ...base, '3D/3dmodel.model': model };
+}
+
+/**
+ * Binary glTF (.glb) with optional planar-mapped texture. Positions are
+ * converted from the app's z-up millimeters to glTF's y-up meters-agnostic
+ * space (we keep mm units; viewers just scale).
+ *
+ * @param {?Float32Array} uvs      2 floats per vertex, or null
+ * @param {?Uint8Array} texturePng PNG bytes to embed, or null for a plain material
+ * @returns {ArrayBuffer} GLB container
+ */
+export function toGLB(positions, indices, uvs = null, texturePng = null, name = 'terrain') {
+  const vertexCount = positions.length / 3;
+  // z-up (x east, y north, z up) -> y-up (x east, y up, z south)
+  const pos = new Float32Array(positions.length);
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < vertexCount; v++) {
+    const x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+    const p = [x, z, -y];
+    for (let k = 0; k < 3; k++) {
+      pos[v * 3 + k] = p[k];
+      if (p[k] < min[k]) min[k] = p[k];
+      if (p[k] > max[k]) max[k] = p[k];
+    }
+  }
+
+  const align = (n) => (n + 3) & ~3;
+  const chunks = [];
+  let byteOffset = 0;
+  const addChunk = (bytes) => {
+    const view = { byteOffset, byteLength: bytes.byteLength };
+    chunks.push(bytes);
+    byteOffset = align(byteOffset + bytes.byteLength);
+    return view;
+  };
+
+  const posView = addChunk(new Uint8Array(pos.buffer));
+  const idxView = addChunk(new Uint8Array(new Uint32Array(indices).buffer));
+  const uvView = uvs && texturePng ? addChunk(new Uint8Array(new Float32Array(uvs).buffer)) : null;
+  const imgView = texturePng ? addChunk(texturePng) : null;
+
+  const bufferViews = [
+    { buffer: 0, byteOffset: posView.byteOffset, byteLength: posView.byteLength, target: 34962 },
+    { buffer: 0, byteOffset: idxView.byteOffset, byteLength: idxView.byteLength, target: 34963 },
+  ];
+  const accessors = [
+    { bufferView: 0, componentType: 5126, count: vertexCount, type: 'VEC3', min, max },
+    { bufferView: 1, componentType: 5125, count: indices.length, type: 'SCALAR' },
+  ];
+  const attributes = { POSITION: 0 };
+  const material = { name, pbrMetallicRoughness: { metallicFactor: 0, roughnessFactor: 0.95 }, doubleSided: false };
+  const gltf = {
+    asset: { version: '2.0', generator: 'terrain-stl-generator' },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0, name }],
+    meshes: [{ primitives: [{ attributes, indices: 1, material: 0 }] }],
+    materials: [material],
+    accessors,
+    bufferViews,
+    buffers: [{ byteLength: byteOffset }],
+  };
+  if (uvView && imgView) {
+    bufferViews.push({ buffer: 0, byteOffset: uvView.byteOffset, byteLength: uvView.byteLength, target: 34962 });
+    accessors.push({ bufferView: 2, componentType: 5126, count: vertexCount, type: 'VEC2' });
+    attributes.TEXCOORD_0 = accessors.length - 1;
+    bufferViews.push({ buffer: 0, byteOffset: imgView.byteOffset, byteLength: imgView.byteLength });
+    gltf.images = [{ bufferView: bufferViews.length - 1, mimeType: 'image/png' }];
+    gltf.samplers = [{ magFilter: 9729, minFilter: 9987, wrapS: 33071, wrapT: 33071 }];
+    gltf.textures = [{ sampler: 0, source: 0 }];
+    material.pbrMetallicRoughness.baseColorTexture = { index: 0 };
+  } else {
+    material.pbrMetallicRoughness.baseColorFactor = [0.55, 0.5, 0.45, 1];
+  }
+
+  const bin = new Uint8Array(byteOffset);
+  let off = 0;
+  for (const c of chunks) {
+    bin.set(c, off);
+    off = align(off + c.byteLength);
+  }
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(gltf));
+  const jsonPadded = new Uint8Array(align(jsonBytes.length));
+  jsonPadded.fill(0x20); // pad JSON chunk with spaces
+  jsonPadded.set(jsonBytes);
+
+  const total = 12 + 8 + jsonPadded.length + 8 + bin.length;
+  const out = new ArrayBuffer(total);
+  const dv = new DataView(out);
+  const u8 = new Uint8Array(out);
+  dv.setUint32(0, 0x46546c67, true); // 'glTF'
+  dv.setUint32(4, 2, true);
+  dv.setUint32(8, total, true);
+  dv.setUint32(12, jsonPadded.length, true);
+  dv.setUint32(16, 0x4e4f534a, true); // 'JSON'
+  u8.set(jsonPadded, 20);
+  const binStart = 20 + jsonPadded.length;
+  dv.setUint32(binStart, bin.length, true);
+  dv.setUint32(binStart + 4, 0x004e4942, true); // 'BIN'
+  u8.set(bin, binStart + 8);
+  return out;
+}
+
+/**
  * 3MF core model files. Returns { path: contentString } entries for the caller
  * to zip (3MF is a ZIP container per the 3MF Core spec).
  */
