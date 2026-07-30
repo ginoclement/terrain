@@ -378,7 +378,64 @@ let lastMesh = null; // { positions, indices, name }
 let lastGrid = null; // { gridW, gridH, topZ, mask, xs, ys, minElev, zPerMeter, baseMM }
 
 $('wireframe-toggle').addEventListener('change', (ev) => preview.setWireframe(ev.target.checked));
-$('btn-close-preview').addEventListener('click', () => $('preview-panel').classList.remove('open'));
+
+function setPreviewOpen(on) {
+  $('preview-panel').classList.toggle('open', on);
+  $('resize-preview').style.display = on ? 'block' : 'none';
+}
+$('btn-close-preview').addEventListener('click', () => setPreviewOpen(false));
+
+// ---------------------------------------------------------------------------
+// Resizable panels
+
+function initResizers() {
+  const sidebar = $('sidebar');
+  const previewPanel = $('preview-panel');
+  const saved = JSON.parse(localStorage.getItem('panelSizes') || '{}');
+  if (saved.sidebar) sidebar.style.width = `${saved.sidebar}px`;
+  if (saved.preview) previewPanel.style.setProperty('--preview-w', `${saved.preview}px`);
+
+  const savePanelSizes = () => {
+    const previewW = Math.round(previewPanel.getBoundingClientRect().width);
+    localStorage.setItem('panelSizes', JSON.stringify({
+      sidebar: Math.round(sidebar.getBoundingClientRect().width),
+      // Keep the stored width when the panel is closed (its live width is ~0)
+      preview: previewW > 100 ? previewW : saved.preview,
+    }));
+  };
+
+  const attach = (resizerId, onDrag) => {
+    const resizer = $(resizerId);
+    resizer.addEventListener('pointerdown', (ev) => {
+      ev.preventDefault();
+      resizer.setPointerCapture(ev.pointerId);
+      resizer.classList.add('active');
+      document.body.classList.add('resizing');
+      previewPanel.classList.add('no-transition');
+      const onMove = (mv) => onDrag(mv.clientX);
+      const onUp = () => {
+        resizer.classList.remove('active');
+        document.body.classList.remove('resizing');
+        previewPanel.classList.remove('no-transition');
+        resizer.removeEventListener('pointermove', onMove);
+        resizer.removeEventListener('pointerup', onUp);
+        savePanelSizes();
+      };
+      resizer.addEventListener('pointermove', onMove);
+      resizer.addEventListener('pointerup', onUp);
+    });
+  };
+
+  attach('resize-sidebar', (x) => {
+    const w = Math.max(220, Math.min(540, x - $('layout').getBoundingClientRect().left));
+    sidebar.style.width = `${w}px`;
+  });
+  attach('resize-preview', (x) => {
+    const w = Math.max(280, Math.min(900, $('layout').getBoundingClientRect().right - x));
+    previewPanel.style.setProperty('--preview-w', `${w}px`);
+  });
+}
+initResizers();
 
 function gridSizeForSelection(sel, maxSamples) {
   const { width, height } = bboxDimensionsMeters(sel.bbox);
@@ -480,7 +537,7 @@ $('btn-generate').addEventListener('click', async () => {
     lastGrid = { gridW, gridH, topZ: finalTop, mask, xs, ys, minElev, zPerMeter, baseMM };
 
     preview.setMesh(mesh.positions, mesh.indices);
-    $('preview-panel').classList.add('open');
+    setPreviewOpen(true);
 
     const volumeCm3 = meshVolume(mesh.positions, mesh.indices) / 1000;
     const gramsSolid = volumeCm3 * 1.24; // PLA density
@@ -611,3 +668,6 @@ document.querySelectorAll('.export-btn').forEach((btn) => {
 });
 
 status('Draw a selection on the map to begin.', 'info');
+
+// Dev/test handle
+window.__terrain = { map, selMgr };
