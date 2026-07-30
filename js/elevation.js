@@ -34,7 +34,16 @@ export const ELEVATION_SOURCES = {
     description: 'USGS 3D Elevation Program ImageServer — down to ~1 m in much of the United States. Free, no key. US coverage only.',
     type: 'imageserver',
     needsKey: false,
+    url: 'https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage',
     attribution: 'Elevation: USGS 3D Elevation Program',
+  },
+  etopo: {
+    name: 'NOAA ETOPO 2022 (bathymetry)',
+    description: 'NOAA NCEI global DEM mosaic with real ocean bathymetry (ETOPO 2022, built on GEBCO). Best source for underwater contours; ~460 m offshore, finer near US coasts. Free, no key.',
+    type: 'imageserver',
+    needsKey: false,
+    url: 'https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_global_mosaic/ImageServer/exportImage',
+    attribution: 'Bathymetry/Elevation: NOAA NCEI ETOPO 2022, GEBCO',
   },
   openmeteo: {
     name: 'Open-Meteo (Copernicus GLO-90)',
@@ -182,11 +191,12 @@ async function fetchApiGrid(bbox, gridW, gridH, { onProgress } = {}) {
   return { elev, zoom: null };
 }
 
-// USGS 3DEP: a single exportImage request returns a Float32 GeoTIFF sampled
-// exactly onto our grid. geotiff.js is loaded lazily on first use.
+// ArcGIS ImageServer sources (USGS 3DEP, NOAA ETOPO): a single exportImage
+// request returns a Float32 GeoTIFF sampled exactly onto our grid. geotiff.js
+// is loaded lazily on first use.
 let geotiffModule = null;
-async function fetch3DEPGrid(bbox, gridW, gridH, { onProgress } = {}) {
-  onProgress?.('Requesting USGS 3DEP raster…');
+async function fetchImageServerGrid(source, bbox, gridW, gridH, { onProgress } = {}) {
+  onProgress?.(`Requesting ${source.name} raster…`);
   if (!geotiffModule) {
     geotiffModule = await import('https://cdn.jsdelivr.net/npm/geotiff@2.1.3/+esm');
   }
@@ -202,8 +212,8 @@ async function fetch3DEPGrid(bbox, gridW, gridH, { onProgress } = {}) {
     noData: '0',
     f: 'image',
   });
-  const resp = await fetch(`https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage?${params}`);
-  if (!resp.ok) throw new Error(`USGS 3DEP request failed (${resp.status})`);
+  const resp = await fetch(`${source.url}?${params}`);
+  if (!resp.ok) throw new Error(`${source.name} request failed (${resp.status})`);
   const buf = await resp.arrayBuffer();
   onProgress?.('Decoding GeoTIFF…');
   let raster;
@@ -212,15 +222,16 @@ async function fetch3DEPGrid(bbox, gridW, gridH, { onProgress } = {}) {
     const image = await tiff.getImage();
     [raster] = await image.readRasters();
   } catch {
-    throw new Error('USGS 3DEP returned no usable data — is the selection inside the United States?');
+    throw new Error(`${source.name} returned no usable data for this area — try another source.`);
   }
   // GeoTIFF row 0 is the north edge; our grid row 0 is south.
+  // Depths are legitimately negative; only reject nodata sentinels.
   const elev = new Float32Array(gridW * gridH);
   for (let j = 0; j < gridH; j++) {
     const srcRow = (gridH - 1 - j) * gridW;
     for (let i = 0; i < gridW; i++) {
       const v = raster[srcRow + i];
-      elev[i + j * gridW] = Number.isFinite(v) && v > -10000 ? v : 0;
+      elev[i + j * gridW] = Number.isFinite(v) && v > -12000 && v < 9000 ? v : 0;
     }
   }
   return { elev, zoom: null };
@@ -237,6 +248,6 @@ export async function fetchElevationGrid(sourceId, bbox, gridW, gridH, opts = {}
     throw new Error(`${source.name} needs an API key — enter one under Data Sources, or switch source.`);
   }
   if (source.type === 'tiles') return fetchTileGrid(source, bbox, gridW, gridH, opts);
-  if (source.type === 'imageserver') return fetch3DEPGrid(bbox, gridW, gridH, opts);
+  if (source.type === 'imageserver') return fetchImageServerGrid(source, bbox, gridW, gridH, opts);
   return fetchApiGrid(bbox, gridW, gridH, opts);
 }

@@ -108,11 +108,17 @@
             <option value="4">Strong</option>
           </select>
         </div>
-        <label class="check-row">
-          <input type="checkbox" id="water-toggle">
-          <span>Flatten water at level (m):</span>
-          <input type="number" id="water-level" value="0" step="1" class="inline-num">
-        </label>
+        <div class="field-row">
+          <label for="water-mode" title="Include: keep seafloor/lakebed depths from the elevation source (use the NOAA ETOPO source for real bathymetry). Flatten: clamp everything at or below the level to a flat water surface.">Underwater terrain</label>
+          <select id="water-mode">
+            <option value="bathy" selected>Include (bathymetry)</option>
+            <option value="flatten">Flatten water</option>
+          </select>
+        </div>
+        <div class="field-row" id="water-level-row" style="display:none">
+          <label for="water-level">Water level (m)</label>
+          <input type="number" id="water-level" value="0" step="1">
+        </div>
         <div class="field-row">
           <label for="contour-step" title="0 = off. Quantizes elevation into terraces for a laser-cut topo look">Contour terraces (m)</label>
           <input type="number" id="contour-step" value="0" min="0" step="10">

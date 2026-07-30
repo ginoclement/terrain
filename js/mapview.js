@@ -33,6 +33,14 @@ export const BASEMAPS = {
     maxzoom: 16,
     attribution: 'USGS The National Map',
   },
+  gebco: {
+    name: 'GEBCO ocean relief',
+    tiles: [
+      'https://wms.gebco.net/mapserv?request=getmap&service=wms&version=1.3.0&layers=GEBCO_LATEST&crs=EPSG:3857&bbox={bbox-epsg-3857}&width=256&height=256&format=image/png',
+    ],
+    maxzoom: 12,
+    attribution: 'Imagery reproduced from the GEBCO_2024 Grid, GEBCO Compilation Group',
+  },
   light: {
     name: 'Carto Light',
     tiles: [

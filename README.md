@@ -46,8 +46,12 @@ modules and fetches map data — any static server is fine.)
    elevation range, and triangle count.
 3. **Sculpt** — optional passes applied before meshing:
    - **Smoothing** — reduces DEM noise/stair-stepping.
-   - **Flatten water** — clamps everything at or below a chosen elevation
-     (sea level, or a lake's surface elevation) to a clean flat plane.
+   - **Underwater terrain** — choose whether to *include* seafloor/lakebed
+     bathymetry (underwater contours, tinted blue in the preview) or
+     *flatten* water at a chosen level (sea level, or a lake's surface
+     elevation) to a clean flat plane. For real bathymetric detail pick the
+     NOAA ETOPO 2022 elevation source; the default AWS tiles carry only
+     coarse ETOPO1 depths.
    - **Contour terraces** — quantizes elevation into discrete steps for a
      laser-cut topographic-model look.
 4. **Export** — binary STL (recommended), ASCII STL, 3MF, OBJ, or PLY. Units
@@ -74,6 +78,7 @@ Switch sources in the sidebar — they all feed the same pipeline:
 | **AWS Terrain Tiles (Terrarium)** — default | Global composite (USGS 3DEP, SRTM, GMTED2010, ETOPO1), up to zoom 15 (~5 m/px in the US, ~30 m most land) | No |
 | **MapTiler Terrain-RGB v2** | Global, up to zoom 12 | Free key from [maptiler.com](https://www.maptiler.com/) |
 | **USGS 3DEP ImageServer** | United States only, down to ~1 m | No |
+| **NOAA ETOPO 2022** | Global land + real ocean bathymetry (GEBCO-based, ~460 m; finer near US coasts) | No |
 | **Open-Meteo elevation API** | Copernicus GLO-90 DEM (~90 m), point queries | No (use grid detail ≤ 128) |
 
 The map's 3D terrain and hillshade are driven by the same AWS Terrarium DEM
