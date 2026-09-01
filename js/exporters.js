@@ -257,6 +257,69 @@ export function toGLB(positions, indices, uvs = null, texturePng = null, name = 
 }
 
 /**
+ * Minimal single-page PDF embedding one full-bleed JPEG (DCTDecode). Enough
+ * for print-ready topo map export without a PDF library.
+ *
+ * @param {Uint8Array} jpegBytes
+ * @param {number} pageWpt page width in PDF points
+ * @param {number} pageHpt page height in PDF points
+ * @param {number} imgPxW  JPEG pixel width
+ * @param {number} imgPxH  JPEG pixel height
+ * @returns {Uint8Array}
+ */
+export function toPDFWithJPEG(jpegBytes, pageWpt, pageHpt, imgPxW, imgPxH, title = 'Topographic Map') {
+  const enc = (s) => new TextEncoder().encode(s);
+  const parts = [];
+  const offsets = [0]; // object 0 is the free head
+  let position = 0;
+  const push = (bytes) => {
+    parts.push(bytes);
+    position += bytes.length;
+  };
+  const beginObj = () => offsets.push(position);
+
+  push(enc('%PDF-1.4\n'));
+  push(Uint8Array.from([0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a])); // binary-file marker comment
+  beginObj();
+  push(enc('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n'));
+  beginObj();
+  push(enc('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n'));
+  beginObj();
+  push(enc(
+    `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWpt.toFixed(2)} ${pageHpt.toFixed(2)}] ` +
+    '/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n'
+  ));
+  beginObj();
+  push(enc(
+    `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${imgPxW} /Height ${imgPxH} ` +
+    `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`
+  ));
+  push(jpegBytes);
+  push(enc('\nendstream\nendobj\n'));
+  const content = `q ${pageWpt.toFixed(2)} 0 0 ${pageHpt.toFixed(2)} 0 0 cm /Im0 Do Q`;
+  beginObj();
+  push(enc(`5 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`));
+  beginObj();
+  push(enc(`6 0 obj\n<< /Title (${title.replace(/[\\()]/g, '')}) /Producer (terrain-stl-generator) >>\nendobj\n`));
+
+  const xrefStart = position;
+  let xref = `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  for (let k = 1; k < offsets.length; k++) {
+    xref += `${String(offsets[k]).padStart(10, '0')} 00000 n \n`;
+  }
+  xref += `trailer\n<< /Size ${offsets.length} /Root 1 0 R /Info 6 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  push(enc(xref));
+
+  const out = new Uint8Array(position);
+  let off = 0;
+  for (const b of parts) {
+    out.set(b, off);
+    off += b.length;
+  }
+  return out;
+}
+
+/**
  * 3MF core model files. Returns { path: contentString } entries for the caller
  * to zip (3MF is a ZIP container per the 3MF Core spec).
  */

@@ -8,8 +8,9 @@ import {
   smoothGrid, flattenWater, quantizeContours, embossRoute, tileRanges, extractSubgrid,
   interlockedTileFilters, splitAtHeight,
 } from './heightops.js';
-import { toBinarySTL, toAsciiSTL, toOBJ, toPLY, to3MFFiles, to3MFColorFiles, toGLB } from './exporters.js';
+import { toBinarySTL, toAsciiSTL, toOBJ, toPLY, to3MFFiles, to3MFColorFiles, toGLB, toPDFWithJPEG } from './exporters.js';
 import { TerrainPreview, LAND_GRADIENT, SEA_GRADIENT, gradientColor } from './preview3d.js';
+import { buildTopoSVG } from './topomap.js';
 
 const $ = (id) => document.getElementById(id);
 const EARTH_RADIUS = 6371000;
@@ -40,6 +41,7 @@ const selMgr = new SelectionManager(map, {
     const info = $('selection-info');
     const slider = $('rotation');
     $('btn-batch-add').disabled = !sel;
+    $('btn-topo-open').disabled = !sel;
     if (!sel) {
       info.textContent = 'No selection yet — pick a tool and draw on the map.';
       $('btn-generate').disabled = true;
@@ -283,6 +285,7 @@ $('search-form').addEventListener('submit', async (ev) => {
     const r = results[0];
     const bb = r.boundingbox.map(Number); // [s, n, w, e]
     map.fitBounds([[bb[2], bb[0]], [bb[3], bb[1]]], { padding: 60, duration: 1200, maxZoom: 13 });
+    lastPlaceName = r.display_name.split(',')[0].trim();
     status(`Found: ${r.display_name.split(',').slice(0, 3).join(',')}`, 'info');
   } catch (err) {
     status(`Search failed: ${err.message}`, 'error');
@@ -317,10 +320,11 @@ function readSettings() {
 // ---------------------------------------------------------------------------
 // OSM waterways via Overpass
 
-async function fetchWaterways(bbox, onProgress) {
-  onProgress?.('Fetching rivers from OpenStreetMap…');
+async function fetchWaterFeatures(bbox, onProgress) {
+  onProgress?.('Fetching water features from OpenStreetMap…');
   const [w, s, e, n] = bbox;
-  const query = `[out:json][timeout:30];way[waterway~"^(river|canal|stream)$"](${s},${w},${n},${e});out geom 6000;`;
+  const bb = `(${s},${w},${n},${e})`;
+  const query = `[out:json][timeout:30];(way[waterway~"^(river|canal|stream)$"]${bb};way[natural=water]${bb};);out geom 8000;`;
   const resp = await fetch('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     body: `data=${encodeURIComponent(query)}`,
@@ -329,12 +333,16 @@ async function fetchWaterways(bbox, onProgress) {
   if (!resp.ok) throw new Error(`Overpass API error ${resp.status}`);
   const data = await resp.json();
   const lines = [];
+  const polys = [];
   for (const el of data.elements || []) {
-    if (el.type === 'way' && el.geometry?.length >= 2) {
-      lines.push(el.geometry.map((g) => [g.lon, g.lat]));
-    }
+    if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
+    const pts = el.geometry.map((g) => [g.lon, g.lat]);
+    const closed = el.tags?.natural === 'water' ||
+      (pts.length > 3 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]);
+    if (closed && el.tags?.natural === 'water') polys.push(pts);
+    else lines.push(pts);
   }
-  return lines;
+  return { lines, polys };
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +427,7 @@ async function computeModel(sel, S, onProgress = () => {}) {
   // OSM waterways
   if (S.riversMode !== 'off') {
     try {
-      const lines = await fetchWaterways(sel.bbox, onProgress);
+      const { lines } = await fetchWaterFeatures(sel.bbox, onProgress);
       if (lines.length) {
         const riverMask = rasterizePolylines(lines, sel.bbox, gridW, gridH, Math.max(1, Math.round(gridW / 220)));
         const delta = S.riversMode === 'engrave' ? -0.5 : 0.5;
@@ -534,6 +542,156 @@ $('btn-generate').addEventListener('click', async () => {
     status(`Generation failed: ${err.message}`, 'error', true);
   } finally {
     btn.disabled = !selMgr.selection;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Topographic map export (2D)
+
+let lastPlaceName = null;
+let topoResult = null; // { svg, pageW, pageH, dpi, paperMMW, paperMMH }
+
+const PAPER_MM = { a4p: [210, 297], a4l: [297, 210], a3p: [297, 420], a3l: [420, 297], letp: [215.9, 279.4], letl: [279.4, 215.9] };
+
+function topoPageSize() {
+  const paper = $('topo-paper').value;
+  if (paper === 'custom') {
+    const w = Math.max(400, Math.min(8000, parseInt($('topo-px-w').value, 10) || 1600));
+    const h = Math.max(400, Math.min(8000, parseInt($('topo-px-h').value, 10) || 1200));
+    return { pageW: w, pageH: h, dpi: 96, paperMMW: (w / 96) * 25.4, paperMMH: (h / 96) * 25.4 };
+  }
+  const [mmW, mmH] = PAPER_MM[paper];
+  const dpi = parseInt($('topo-dpi').value, 10) || 150;
+  return {
+    pageW: Math.round((mmW / 25.4) * dpi),
+    pageH: Math.round((mmH / 25.4) * dpi),
+    dpi,
+    paperMMW: mmW,
+    paperMMH: mmH,
+  };
+}
+
+$('topo-paper').addEventListener('change', () => {
+  const custom = $('topo-paper').value === 'custom';
+  $('topo-dpi-row').style.display = custom ? 'none' : 'flex';
+  $('topo-px-row').style.display = custom ? 'flex' : 'none';
+});
+
+$('btn-topo-open').addEventListener('click', () => {
+  if (!selMgr.selection) return;
+  if (!$('topo-title-text').value && lastPlaceName) $('topo-title-text').value = lastPlaceName;
+  $('topo-modal').hidden = false;
+});
+$('btn-close-topo').addEventListener('click', () => { $('topo-modal').hidden = true; });
+$('topo-modal').addEventListener('click', (ev) => {
+  if (ev.target === $('topo-modal')) $('topo-modal').hidden = true;
+});
+
+$('btn-topo-render').addEventListener('click', async () => {
+  const sel = selMgr.selection;
+  if (!sel) return;
+  const btn = $('btn-topo-render');
+  btn.disabled = true;
+  $('topo-info').textContent = 'Rendering…';
+  try {
+    const { pageW, pageH, dpi, paperMMW, paperMMH } = topoPageSize();
+    // Sample the DEM at a fixed high resolution independent of model settings.
+    const { gridW, gridH } = gridSizeForSelection(sel, 512);
+    const { elev } = await fetchElevationGrid(sourceSelect.value, sel.bbox, gridW, gridH, {
+      apiKey: $('maptiler-key').value.trim(),
+      onProgress: (msg) => { $('topo-info').textContent = msg; },
+    });
+    let waterLines = [], waterPolys = [];
+    if ($('topo-water').checked) {
+      try {
+        const feats = await fetchWaterFeatures(sel.bbox, (msg) => { $('topo-info').textContent = msg; });
+        waterLines = feats.lines;
+        waterPolys = feats.polys;
+      } catch (err) {
+        console.warn('Water fetch failed', err);
+      }
+    }
+    $('topo-info').textContent = 'Drawing map…';
+    const opts = {
+      contours: $('topo-contours').checked,
+      contourInterval: parseFloat($('topo-interval').value) || 0,
+      contourLabels: $('topo-labels').checked,
+      hillshade: $('topo-hillshade').checked,
+      hypso: $('topo-hypso').checked,
+      water: $('topo-water').checked,
+      title: $('topo-title').checked,
+      titleText: $('topo-title-text').value.trim() || 'Topographic Map',
+      scaleBar: $('topo-scalebar').checked,
+      grid: $('topo-grid').checked,
+      legend: $('topo-legend').checked,
+      dpi,
+      paperMMW,
+    };
+    const { svg, contourInterval, scaleRatio } = buildTopoSVG({
+      elev, W: gridW, H: gridH, bbox: sel.bbox, pageW, pageH, opts, waterLines, waterPolys,
+    });
+    topoResult = { svg, pageW, pageH, dpi, paperMMW, paperMMH, name: (opts.titleText || 'topo-map').toLowerCase().replace(/[^a-z0-9]+/g, '-') };
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const img = $('topo-preview-img');
+    if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    img.dataset.url = URL.createObjectURL(blob);
+    img.src = img.dataset.url;
+    $('topo-info').textContent = `${pageW} × ${pageH} px · contours every ${contourInterval} m · scale ≈ 1:${scaleRatio.toLocaleString()}`;
+    ['btn-topo-svg', 'btn-topo-png', 'btn-topo-pdf'].forEach((id) => { $(id).disabled = false; });
+  } catch (err) {
+    console.error(err);
+    $('topo-info').textContent = `Failed: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function topoRasterCanvas() {
+  const { svg, pageW, pageH } = topoResult;
+  const img = new Image();
+  img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  await img.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = pageW;
+  canvas.height = pageH;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, pageW, pageH);
+  ctx.drawImage(img, 0, 0, pageW, pageH);
+  URL.revokeObjectURL(img.src);
+  return canvas;
+}
+
+$('btn-topo-svg').addEventListener('click', () => {
+  if (!topoResult) return;
+  download(topoResult.svg, `${topoResult.name}.svg`, 'image/svg+xml');
+});
+$('btn-topo-png').addEventListener('click', async () => {
+  if (!topoResult) return;
+  try {
+    $('topo-info').textContent = 'Rasterizing PNG…';
+    const canvas = await topoRasterCanvas();
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    download(blob, `${topoResult.name}.png`);
+    $('topo-info').textContent = 'PNG exported.';
+  } catch (err) {
+    $('topo-info').textContent = `PNG export failed: ${err.message}`;
+  }
+});
+$('btn-topo-pdf').addEventListener('click', async () => {
+  if (!topoResult) return;
+  try {
+    $('topo-info').textContent = 'Building PDF…';
+    const canvas = await topoRasterCanvas();
+    const jpegBlob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    const jpegBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+    const wPt = (topoResult.paperMMW / 25.4) * 72;
+    const hPt = (topoResult.paperMMH / 25.4) * 72;
+    const pdf = toPDFWithJPEG(jpegBytes, wPt, hPt, canvas.width, canvas.height, $('topo-title-text').value.trim() || 'Topographic Map');
+    download(pdf, `${topoResult.name}.pdf`, 'application/pdf');
+    $('topo-info').textContent = 'PDF exported.';
+  } catch (err) {
+    $('topo-info').textContent = `PDF export failed: ${err.message}`;
   }
 });
 

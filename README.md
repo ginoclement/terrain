@@ -82,9 +82,17 @@ modules and fetches map data — any static server is fine.)
    - **Two-piece split at an elevation** — a lower and an upper piece;
      print them in different colors and stack the flat-bottomed upper piece
      on the lower one (e.g. white above the snow line).
-5. **Batch** — queue several selections (each remembers the settings it was
+5. **Topo map (2D)** — render the selected area as a printable topographic
+   map instead of (or alongside) the 3D model. Everything is toggleable:
+   contour lines with auto or custom interval and labeled index contours,
+   hillshade relief, hypsometric tint, OSM water features, title block,
+   scale bar with 1:N ratio, lat/lon graticule, and north arrow + legend.
+   Size by paper preset (A4/A3/Letter, portrait/landscape, 150 or 300 DPI)
+   or exact pixels; export as SVG (vector — editable, laser-cuttable),
+   PNG, or a print-ready PDF.
+6. **Batch** — queue several selections (each remembers the settings it was
    queued with) and export them all as one ZIP of STLs.
-6. **Share** — the Share link button copies a URL that restores your view,
+7. **Share** — the Share link button copies a URL that restores your view,
    selection, and settings.
 
 The app is an installable PWA: the shell and libraries are cached by a
@@ -136,7 +144,9 @@ js/selection.js    drawing tools, rotation, profile tool, mask rasterization
 js/elevation.js    elevation source registry & fetching/decoding
 js/mesh.js         watertight solid construction + decimation (pure, node-testable)
 js/heightops.js    smoothing/water/contours/tiles/interlocks/splits (pure)
-js/exporters.js    STL/OBJ/PLY/3MF/color-3MF/GLB writers (pure, node-testable)
+js/exporters.js    STL/OBJ/PLY/3MF/color-3MF/GLB/PDF writers (pure, node-testable)
+js/topomap.js      2D topo map renderer: contours, rasters, furniture, SVG
+js/colors.js       shared elevation color ramps
 sw.js              service worker (offline shell + tile cache)
 tests/             geometry, grid-ops, and exporter checks
 ```
