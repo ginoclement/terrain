@@ -268,6 +268,14 @@ export function toGLB(positions, indices, uvs = null, texturePng = null, name = 
  * @returns {Uint8Array}
  */
 export function toPDFWithJPEG(jpegBytes, pageWpt, pageHpt, imgPxW, imgPxH, title = 'Topographic Map') {
+  return toPDFMultiJPEG([{ jpeg: jpegBytes, pxW: imgPxW, pxH: imgPxH }], pageWpt, pageHpt, title);
+}
+
+/**
+ * Multi-page variant: one full-bleed JPEG per page (all pages the same size).
+ * @param {Array<{jpeg: Uint8Array, pxW: number, pxH: number}>} pages
+ */
+export function toPDFMultiJPEG(pages, pageWpt, pageHpt, title = 'Topographic Map') {
   const enc = (s) => new TextEncoder().encode(s);
   const parts = [];
   const offsets = [0]; // object 0 is the free head
@@ -283,24 +291,29 @@ export function toPDFWithJPEG(jpegBytes, pageWpt, pageHpt, imgPxW, imgPxH, title
   beginObj();
   push(enc('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n'));
   beginObj();
-  push(enc('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n'));
+  const kids = pages.map((_, k) => `${3 + 3 * k} 0 R`).join(' ');
+  push(enc(`2 0 obj\n<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>\nendobj\n`));
+  pages.forEach(({ jpeg, pxW, pxH }, k) => {
+    const pageObj = 3 + 3 * k, imgObj = pageObj + 1, contentObj = pageObj + 2;
+    beginObj();
+    push(enc(
+      `${pageObj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWpt.toFixed(2)} ${pageHpt.toFixed(2)}] ` +
+      `/Resources << /XObject << /Im0 ${imgObj} 0 R >> >> /Contents ${contentObj} 0 R >>\nendobj\n`
+    ));
+    beginObj();
+    push(enc(
+      `${imgObj} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${pxW} /Height ${pxH} ` +
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`
+    ));
+    push(jpeg);
+    push(enc('\nendstream\nendobj\n'));
+    const content = `q ${pageWpt.toFixed(2)} 0 0 ${pageHpt.toFixed(2)} 0 0 cm /Im0 Do Q`;
+    beginObj();
+    push(enc(`${contentObj} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`));
+  });
+  const infoObj = 3 + 3 * pages.length;
   beginObj();
-  push(enc(
-    `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWpt.toFixed(2)} ${pageHpt.toFixed(2)}] ` +
-    '/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n'
-  ));
-  beginObj();
-  push(enc(
-    `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${imgPxW} /Height ${imgPxH} ` +
-    `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`
-  ));
-  push(jpegBytes);
-  push(enc('\nendstream\nendobj\n'));
-  const content = `q ${pageWpt.toFixed(2)} 0 0 ${pageHpt.toFixed(2)} 0 0 cm /Im0 Do Q`;
-  beginObj();
-  push(enc(`5 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`));
-  beginObj();
-  push(enc(`6 0 obj\n<< /Title (${title.replace(/[\\()]/g, '')}) /Producer (terrain-stl-generator) >>\nendobj\n`));
+  push(enc(`${infoObj} 0 obj\n<< /Title (${title.replace(/[\\()]/g, '')}) /Producer (terrain-stl-generator) >>\nendobj\n`));
 
   const xrefStart = position;
   let xref = `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
@@ -317,6 +330,42 @@ export function toPDFWithJPEG(jpegBytes, pageWpt, pageHpt, imgPxW, imgPxH, title
     off += b.length;
   }
   return out;
+}
+
+/**
+ * Minimal DXF (R12) with POLYLINE entities on named layers — the dialect most
+ * laser/CNC tools (LightBurn, Inkscape, Fusion) import reliably. Coordinates
+ * are millimeters, y-up.
+ *
+ * @param {Array<{pts: [number,number][], layer: string, closed?: boolean}>} paths
+ *   pts in mm with y DOWN from the sheet top (SVG convention); converted here.
+ * @param {number} sheetHmm sheet height in mm (for the y flip)
+ */
+export function toDXF(paths, sheetHmm) {
+  const L = [];
+  const push = (code, value) => L.push(String(code), String(value));
+  push(0, 'SECTION'); push(2, 'HEADER');
+  push(9, '$ACADVER'); push(1, 'AC1009');
+  push(0, 'ENDSEC');
+  push(0, 'SECTION'); push(2, 'TABLES');
+  push(0, 'TABLE'); push(2, 'LAYER'); push(70, 2);
+  for (const [name, color] of [['CUT', 1], ['GUIDE', 5]]) {
+    push(0, 'LAYER'); push(2, name); push(70, 0); push(62, color); push(6, 'CONTINUOUS');
+  }
+  push(0, 'ENDTAB'); push(0, 'ENDSEC');
+  push(0, 'SECTION'); push(2, 'ENTITIES');
+  for (const { pts, layer, closed } of paths) {
+    if (!pts || pts.length < 2) continue;
+    push(0, 'POLYLINE'); push(8, layer); push(66, 1); push(70, closed ? 1 : 0);
+    for (const [x, y] of pts) {
+      push(0, 'VERTEX'); push(8, layer);
+      push(10, (+x).toFixed(3)); push(20, (sheetHmm - y).toFixed(3)); push(30, '0');
+    }
+    push(0, 'SEQEND');
+  }
+  push(0, 'ENDSEC');
+  push(0, 'EOF');
+  return L.join('\n') + '\n';
 }
 
 /**

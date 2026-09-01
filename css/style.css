@@ -307,6 +307,8 @@ button.ghost { background: transparent; }
   background: #fff;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
+.cut-exports { display: flex; gap: 6px; flex-wrap: wrap; }
+
 .topo-exports {
   display: flex;
   gap: 10px;
