@@ -87,9 +87,16 @@ modules and fetches map data — any static server is fine.)
    contour lines with auto or custom interval and labeled index contours,
    hillshade relief, hypsometric tint, OSM water features, title block,
    scale bar with 1:N ratio, lat/lon graticule, and north arrow + legend.
-   Size by paper preset (A4/A3/Letter, portrait/landscape, 150 or 300 DPI)
-   or exact pixels; export as SVG (vector — editable, laser-cuttable),
-   PNG, or a print-ready PDF.
+   A **line-art preset** switches to pure black-on-white contour
+   cartography. Size by paper preset (A4/A3/Letter, portrait/landscape,
+   150 or 300 DPI) or exact pixels; export as SVG (vector — editable,
+   laser-cuttable), PNG, or a print-ready PDF.
+   - **Layered cut sheets**: one sheet per elevation band for building a
+     physical stacked-contour relief model — red closed cut paths (holes
+     included), dashed blue guides showing where the next layer glues on,
+     and a label per sheet. Export as SVG per layer (ZIP), DXF R12 per
+     layer in millimeters (ZIP, CUT/GUIDE layers), or one multi-page PDF
+     for hand cutting.
 6. **Batch** — queue several selections (each remembers the settings it was
    queued with) and export them all as one ZIP of STLs.
 7. **Share** — the Share link button copies a URL that restores your view,

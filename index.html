@@ -268,6 +268,14 @@
       </div>
       <div class="topo-body">
         <div class="topo-controls">
+          <h3>Style</h3>
+          <div class="field-row">
+            <label for="topo-style">Preset</label>
+            <select id="topo-style">
+              <option value="color" selected>Full color</option>
+              <option value="lineart">Line art (B/W contours)</option>
+            </select>
+          </div>
           <h3>Map details</h3>
           <label class="check-row"><input type="checkbox" id="topo-contours" checked><span>Contour lines</span></label>
           <div class="field-row">
@@ -313,6 +321,13 @@
             </span>
           </div>
           <button id="btn-topo-render" class="primary">Render preview</button>
+          <h3>Layered cut sheets</h3>
+          <p class="hint">One sheet per elevation band for laser/Cricut cutting and stacking (uses the contour interval above; red = cut, dashed blue = next-layer glue guide). Render the preview first.</p>
+          <div class="cut-exports">
+            <button id="btn-cut-svg" disabled>SVG (ZIP)</button>
+            <button id="btn-cut-dxf" disabled>DXF (ZIP)</button>
+            <button id="btn-cut-pdf" disabled>PDF</button>
+          </div>
         </div>
         <div class="topo-preview"><img id="topo-preview-img" alt="Topo map preview"></div>
       </div>

@@ -8,9 +8,9 @@ import {
   smoothGrid, flattenWater, quantizeContours, embossRoute, tileRanges, extractSubgrid,
   interlockedTileFilters, splitAtHeight,
 } from './heightops.js';
-import { toBinarySTL, toAsciiSTL, toOBJ, toPLY, to3MFFiles, to3MFColorFiles, toGLB, toPDFWithJPEG } from './exporters.js';
+import { toBinarySTL, toAsciiSTL, toOBJ, toPLY, to3MFFiles, to3MFColorFiles, toGLB, toPDFWithJPEG, toPDFMultiJPEG, toDXF } from './exporters.js';
 import { TerrainPreview, LAND_GRADIENT, SEA_GRADIENT, gradientColor } from './preview3d.js';
-import { buildTopoSVG } from './topomap.js';
+import { buildTopoSVG, buildCutSheets } from './topomap.js';
 
 const $ = (id) => document.getElementById(id);
 const EARTH_RADIUS = 6371000;
@@ -577,6 +577,13 @@ $('topo-paper').addEventListener('change', () => {
   $('topo-px-row').style.display = custom ? 'flex' : 'none';
 });
 
+$('topo-style').addEventListener('change', () => {
+  const lineArt = $('topo-style').value === 'lineart';
+  $('topo-hillshade').checked = !lineArt;
+  $('topo-hypso').checked = !lineArt;
+  if (lineArt) $('topo-contours').checked = true;
+});
+
 $('btn-topo-open').addEventListener('click', () => {
   if (!selMgr.selection) return;
   if (!$('topo-title-text').value && lastPlaceName) $('topo-title-text').value = lastPlaceName;
@@ -616,6 +623,7 @@ $('btn-topo-render').addEventListener('click', async () => {
       contours: $('topo-contours').checked,
       contourInterval: parseFloat($('topo-interval').value) || 0,
       contourLabels: $('topo-labels').checked,
+      lineArt: $('topo-style').value === 'lineart',
       hillshade: $('topo-hillshade').checked,
       hypso: $('topo-hypso').checked,
       water: $('topo-water').checked,
@@ -630,14 +638,19 @@ $('btn-topo-render').addEventListener('click', async () => {
     const { svg, contourInterval, scaleRatio } = buildTopoSVG({
       elev, W: gridW, H: gridH, bbox: sel.bbox, pageW, pageH, opts, waterLines, waterPolys,
     });
-    topoResult = { svg, pageW, pageH, dpi, paperMMW, paperMMH, name: (opts.titleText || 'topo-map').toLowerCase().replace(/[^a-z0-9]+/g, '-') };
+    topoResult = {
+      svg, pageW, pageH, dpi, paperMMW, paperMMH,
+      elev, gridW, gridH, bbox: [...sel.bbox],
+      titleText: opts.titleText,
+      name: (opts.titleText || 'topo-map').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+    };
     const blob = new Blob([svg], { type: 'image/svg+xml' });
     const img = $('topo-preview-img');
     if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
     img.dataset.url = URL.createObjectURL(blob);
     img.src = img.dataset.url;
     $('topo-info').textContent = `${pageW} × ${pageH} px · contours every ${contourInterval} m · scale ≈ 1:${scaleRatio.toLocaleString()}`;
-    ['btn-topo-svg', 'btn-topo-png', 'btn-topo-pdf'].forEach((id) => { $(id).disabled = false; });
+    ['btn-topo-svg', 'btn-topo-png', 'btn-topo-pdf', 'btn-cut-svg', 'btn-cut-dxf', 'btn-cut-pdf'].forEach((id) => { $(id).disabled = false; });
   } catch (err) {
     console.error(err);
     $('topo-info').textContent = `Failed: ${err.message}`;
@@ -646,8 +659,7 @@ $('btn-topo-render').addEventListener('click', async () => {
   }
 });
 
-async function topoRasterCanvas() {
-  const { svg, pageW, pageH } = topoResult;
+async function svgToCanvas(svg, pageW, pageH) {
   const img = new Image();
   img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
   await img.decode();
@@ -661,6 +673,75 @@ async function topoRasterCanvas() {
   URL.revokeObjectURL(img.src);
   return canvas;
 }
+
+function topoRasterCanvas() {
+  return svgToCanvas(topoResult.svg, topoResult.pageW, topoResult.pageH);
+}
+
+// -- layered cut sheets -----------------------------------------------------
+
+function buildSheetsFromLast() {
+  const { elev, gridW, gridH, bbox, pageW, pageH, paperMMW, titleText } = topoResult;
+  const result = buildCutSheets({
+    elev, W: gridW, H: gridH, bbox, pageW, pageH, paperMMW,
+    interval: parseFloat($('topo-interval').value) || 0,
+    title: titleText,
+  });
+  if (!result.sheets.length) throw new Error('No layers produced — try a smaller contour interval.');
+  return result;
+}
+
+$('btn-cut-svg').addEventListener('click', () => {
+  if (!topoResult) return;
+  try {
+    const { sheets, interval } = buildSheetsFromLast();
+    const files = {};
+    for (const s of sheets) files[`${s.name}.svg`] = s.svg;
+    zipDownload(files, `${topoResult.name}-cut-sheets.zip`);
+    $('topo-info').textContent = `Exported ${sheets.length} cut sheets (SVG) at ${interval} m per layer.`;
+  } catch (err) {
+    $('topo-info').textContent = `Cut sheets failed: ${err.message}`;
+  }
+});
+
+$('btn-cut-dxf').addEventListener('click', () => {
+  if (!topoResult) return;
+  try {
+    const { sheets, interval } = buildSheetsFromLast();
+    const files = {};
+    for (const s of sheets) {
+      const paths = [
+        ...s.cutLoops.map((pts) => ({ pts, layer: 'CUT', closed: true })),
+        ...s.guideLoops.map((pts) => ({ pts, layer: 'GUIDE', closed: true })),
+      ];
+      files[`${s.name}.dxf`] = toDXF(paths, topoResult.paperMMH);
+    }
+    zipDownload(files, `${topoResult.name}-cut-sheets-dxf.zip`);
+    $('topo-info').textContent = `Exported ${sheets.length} cut sheets (DXF, mm) at ${interval} m per layer.`;
+  } catch (err) {
+    $('topo-info').textContent = `Cut sheets failed: ${err.message}`;
+  }
+});
+
+$('btn-cut-pdf').addEventListener('click', async () => {
+  if (!topoResult) return;
+  try {
+    const { sheets, interval } = buildSheetsFromLast();
+    $('topo-info').textContent = `Rasterizing ${sheets.length} sheets…`;
+    const pages = [];
+    for (const s of sheets) {
+      const canvas = await svgToCanvas(s.svg, topoResult.pageW, topoResult.pageH);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+      pages.push({ jpeg: new Uint8Array(await blob.arrayBuffer()), pxW: canvas.width, pxH: canvas.height });
+    }
+    const wPt = (topoResult.paperMMW / 25.4) * 72;
+    const hPt = (topoResult.paperMMH / 25.4) * 72;
+    download(toPDFMultiJPEG(pages, wPt, hPt, `${topoResult.titleText} cut sheets`), `${topoResult.name}-cut-sheets.pdf`, 'application/pdf');
+    $('topo-info').textContent = `Exported ${sheets.length}-page cut-sheet PDF at ${interval} m per layer.`;
+  } catch (err) {
+    $('topo-info').textContent = `Cut sheets failed: ${err.message}`;
+  }
+});
 
 $('btn-topo-svg').addEventListener('click', () => {
   if (!topoResult) return;

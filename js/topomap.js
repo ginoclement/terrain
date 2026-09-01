@@ -137,6 +137,24 @@ export function traceContours(elev, W, H, level) {
   return polylines;
 }
 
+/**
+ * Closed loops bounding the region elev >= level, clipped to the grid: the
+ * grid is padded with a ring of -1e9 so contours that would run off the map
+ * edge close around it instead. Every returned loop is closed (first ==
+ * last point) in original grid coordinates. Used for layered cut sheets.
+ */
+export function traceClosedBands(elev, W, H, level) {
+  const PW = W + 2, PH = H + 2;
+  const padded = new Float32Array(PW * PH).fill(-1e9);
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) padded[i + 1 + (j + 1) * PW] = elev[i + j * W];
+  }
+  const clamp = (v, hi) => Math.max(0, Math.min(hi, v));
+  return traceContours(padded, PW, PH, level)
+    .map((pts) => pts.map(([x, y]) => [clamp(x - 1, W - 1), clamp(y - 1, H - 1)]))
+    .filter((pts) => pts.length >= 4);
+}
+
 /** Length of a polyline in arbitrary units. */
 export function polylineLength(pts) {
   let len = 0;
@@ -326,7 +344,7 @@ export function buildTopoSVG(p) {
           const px = gx(pts[mid][0]), py = gy(pts[mid][1]);
           labels.push(
             `<text x="${fmt(px)}" y="${fmt(py)}" transform="rotate(${fmt(ang)} ${fmt(px)} ${fmt(py)})" ` +
-            `font-size="${fmt(base * 0.012)}" text-anchor="middle" dominant-baseline="middle" fill="#8a5a2b" ` +
+            `font-size="${fmt(base * 0.012)}" text-anchor="middle" dominant-baseline="middle" fill="${opts.lineArt ? '#000000' : '#8a5a2b'}" ` +
             `paint-order="stroke" stroke="#ffffff" stroke-width="${fmt(base * 0.004)}" font-family="sans-serif">${Math.round(level)}</text>`
           );
           labelCount++;
@@ -334,8 +352,10 @@ export function buildTopoSVG(p) {
       }
     }
     const sw = Math.max(0.5, mapW * 0.0006);
-    layers.push(`<g fill="none" stroke="#b08050" stroke-width="${fmt(sw)}" opacity="0.85">${minor.join('')}</g>`);
-    layers.push(`<g fill="none" stroke="#8a5a2b" stroke-width="${fmt(sw * 2.2)}" opacity="0.95">${index.join('')}</g>`);
+    const minorColor = opts.lineArt ? '#333333' : '#b08050';
+    const indexColor = opts.lineArt ? '#000000' : '#8a5a2b';
+    layers.push(`<g fill="none" stroke="${minorColor}" stroke-width="${fmt(sw)}" opacity="0.85">${minor.join('')}</g>`);
+    layers.push(`<g fill="none" stroke="${indexColor}" stroke-width="${fmt(sw * 2.2)}" opacity="0.95">${index.join('')}</g>`);
     if (labels.length) layers.push(`<g>${labels.join('')}</g>`);
   }
 
@@ -392,7 +412,7 @@ export function buildTopoSVG(p) {
     const fs = base * 0.013;
     furniture.push(
       `<g font-family="sans-serif" font-size="${fmt(fs)}" fill="#333">` +
-      `<line x1="${fmt(lx - fs * 11)}" y1="${fmt(ly)}" x2="${fmt(lx - fs * 9)}" y2="${fmt(ly)}" stroke="#8a5a2b" stroke-width="2"/>` +
+      `<line x1="${fmt(lx - fs * 11)}" y1="${fmt(ly)}" x2="${fmt(lx - fs * 9)}" y2="${fmt(ly)}" stroke="${opts.lineArt ? '#000000' : '#8a5a2b'}" stroke-width="2"/>` +
       `<text x="${fmt(lx - fs * 8.6)}" y="${fmt(ly + fs * 0.35)}">contours every ${interval >= 1 ? Math.round(interval) : interval} m</text>` +
       (opts.water ? `<line x1="${fmt(lx - fs * 11)}" y1="${fmt(ly + fs * 1.6)}" x2="${fmt(lx - fs * 9)}" y2="${fmt(ly + fs * 1.6)}" stroke="#4a86b8" stroke-width="2"/><text x="${fmt(lx - fs * 8.6)}" y="${fmt(ly + fs * 1.95)}">waterways</text>` : '') +
       `</g>`
@@ -420,4 +440,106 @@ export function buildTopoSVG(p) {
     furniture.join('') +
     `</svg>`;
   return { svg, contourInterval: interval, scaleRatio };
+}
+
+// ---------------------------------------------------------------------------
+// Layered cut sheets (laser / Cricut / hand-cut stacking)
+
+/**
+ * Build one cut sheet per elevation band. Sheet k's CUT loops bound the
+ * region elev >= level_k (layer 0 is the full base rectangle); its GUIDE
+ * loops are the next layer's outline, drawn for glue placement. All loops are
+ * closed, so interior holes fall out naturally when cut.
+ *
+ * @param {Object} p {elev, W, H, bbox, pageW, pageH, paperMMW, interval, title}
+ * @returns {{sheets: [{svg, name, level, cutLoops, guideLoops}], levels, interval, mapWmm, mapHmm}}
+ *   cutLoops/guideLoops are in page-millimeter coordinates (y down from sheet top).
+ */
+export function buildCutSheets(p) {
+  const { elev, W, H, bbox, pageW, pageH, paperMMW, title } = p;
+  const [bw, bs, be, bn] = bbox;
+  const midLat = ((bs + bn) / 2) * (Math.PI / 180);
+  const realWidthM = (be - bw) * 111320 * Math.cos(midLat);
+  const realHeightM = (bn - bs) * 111320;
+
+  let minE = Infinity, maxE = -Infinity;
+  for (let s = 0; s < elev.length; s++) {
+    if (elev[s] < minE) minE = elev[s];
+    if (elev[s] > maxE) maxE = elev[s];
+  }
+  let interval = p.interval;
+  if (!(interval > 0)) interval = niceStep((maxE - minE) / 12) || 10;
+  let levels = contourLevels(minE, maxE, interval).filter((l) => l > minE);
+  if (levels.length > 60) {
+    interval = niceStep((maxE - minE) / 50);
+    levels = contourLevels(minE, maxE, interval).filter((l) => l > minE);
+  }
+
+  // Layout: fit the map rect into the page with a margin band for labels.
+  const base = Math.min(pageW, pageH);
+  const margin = base * 0.05;
+  const labelBand = base * 0.05;
+  const availW = pageW - 2 * margin;
+  const availH = pageH - 2 * margin - labelBand;
+  const aspect = realWidthM / realHeightM;
+  let mapW = availW, mapH = availW / aspect;
+  if (mapH > availH) { mapH = availH; mapW = availH * aspect; }
+  const mapX = (pageW - mapW) / 2;
+  const mapY = margin + labelBand;
+  const pxPerMM = pageW / paperMMW;
+
+  const gx = (x) => mapX + (x / (W - 1)) * mapW;
+  const gy = (y) => mapY + (1 - y / (H - 1)) * mapH;
+  const minLoopLenPx = 4 * pxPerMM; // drop confetti smaller than ~4mm perimeter
+
+  const loopsAtLevel = new Map();
+  const getLoops = (level) => {
+    if (!loopsAtLevel.has(level)) {
+      const loops = traceClosedBands(elev, W, H, level)
+        .map((pts) => pts.map(([x, y]) => [gx(x), gy(y)]))
+        .filter((pts) => polylineLength(pts) >= minLoopLenPx);
+      loopsAtLevel.set(level, loops);
+    }
+    return loopsAtLevel.get(level);
+  };
+  const rectLoop = [[mapX, mapY], [mapX + mapW, mapY], [mapX + mapW, mapY + mapH], [mapX, mapY + mapH], [mapX, mapY]];
+
+  const toPath = (pts) => `M${pts.map(([x, y]) => `${fmt(x)},${fmt(y)}`).join('L')}`;
+  const toMM = (pts) => pts.map(([x, y]) => [x / pxPerMM, y / pxPerMM]);
+
+  const sheets = [];
+  const total = levels.length + 1;
+  for (let k = 0; k <= levels.length; k++) {
+    const cutLoops = k === 0 ? [rectLoop] : getLoops(levels[k - 1]);
+    const guideLoops = k < levels.length ? getLoops(levels[k]) : [];
+    if (!cutLoops.length) continue;
+    const levelLabel = k === 0 ? `base (${Math.round(minE)} m+)` : `≥ ${Math.round(levels[k - 1])} m`;
+    const label = `${title ? `${title} · ` : ''}layer ${k + 1}/${total} · ${levelLabel} · ${interval} m steps`;
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}" height="${pageH}" viewBox="0 0 ${pageW} ${pageH}">` +
+      `<rect width="${pageW}" height="${pageH}" fill="#ffffff"/>` +
+      `<text x="${fmt(margin)}" y="${fmt(margin + labelBand * 0.5)}" font-size="${fmt(base * 0.022)}" fill="#0066ff" font-family="sans-serif">${esc(label)}</text>` +
+      `<g fill="none" stroke="#0066ff" stroke-width="${fmt(Math.max(0.6, pxPerMM * 0.15))}" stroke-dasharray="${fmt(pxPerMM * 1.2)} ${fmt(pxPerMM * 0.9)}">` +
+      guideLoops.map((pts) => `<path d="${toPath(pts)}"/>`).join('') +
+      `</g>` +
+      `<g fill="none" stroke="#ff0000" stroke-width="${fmt(Math.max(0.5, pxPerMM * 0.1))}">` +
+      cutLoops.map((pts) => `<path d="${toPath(pts)}"/>`).join('') +
+      `</g>` +
+      `</svg>`;
+    sheets.push({
+      svg,
+      name: `layer-${String(k + 1).padStart(2, '0')}-${k === 0 ? 'base' : `${Math.round(levels[k - 1])}m`}`,
+      level: k === 0 ? minE : levels[k - 1],
+      cutLoops: cutLoops.map(toMM),
+      guideLoops: guideLoops.map(toMM),
+      label,
+    });
+  }
+  return {
+    sheets,
+    levels,
+    interval,
+    mapWmm: mapW / pxPerMM,
+    mapHmm: mapH / pxPerMM,
+  };
 }

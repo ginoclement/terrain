@@ -1,5 +1,5 @@
-import { niceStep, contourLevels, traceContours, polylineLength } from '../js/topomap.js';
-import { toPDFWithJPEG } from '../js/exporters.js';
+import { niceStep, contourLevels, traceContours, traceClosedBands, polylineLength } from '../js/topomap.js';
+import { toPDFWithJPEG, toPDFMultiJPEG, toDXF } from '../js/exporters.js';
 
 let failures = 0;
 function check(name, cond, detail = '') {
@@ -88,6 +88,72 @@ check('contourLevels includes negatives', JSON.stringify(contourLevels(-250, 120
   });
   check('PDF: xref offsets point at objects', offsetsOk);
   check('PDF: jpeg embedded verbatim', text.includes('stream\n\xff\xd8\xff'));
+}
+
+// --- traceClosedBands: regions touching the grid edge still close ---
+{
+  const W = 41, H = 21;
+  const elev = new Float32Array(W * H);
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) elev[i + j * W] = i; // slope hits E edge
+  const loops = traceClosedBands(elev, W, H, 20.5);
+  check('bands slope: single loop', loops.length === 1, `got ${loops.length}`);
+  const pts = loops[0];
+  const closed = Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) < 1e-9;
+  check('bands slope: loop closed despite touching edges', closed);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of pts) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  check('bands slope: hugs grid boundary on the high side', maxX >= W - 1 - 1e-6 && minY <= 1e-6 && maxY >= H - 1 - 1e-6);
+  check('bands slope: left edge at the contour', Math.abs(minX - 20.5) < 0.01, `minX=${minX}`);
+
+  // donut region (hole): two loops (outer + hole)
+  const elev2 = new Float32Array(W * H);
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const d = Math.hypot(i - 20, j - 10);
+    elev2[i + j * W] = d > 4 && d < 9 ? 10 : 0;
+  }
+  const loops2 = traceClosedBands(elev2, W, H, 5);
+  check('bands donut: outer + hole loops', loops2.length === 2, `got ${loops2.length}`);
+  const allClosed = loops2.every((l) => Math.hypot(l[0][0] - l[l.length - 1][0], l[0][1] - l[l.length - 1][1]) < 1e-9);
+  check('bands donut: all loops closed', allClosed);
+}
+
+// --- DXF structure ---
+{
+  const dxf = toDXF([
+    { pts: [[10, 10], [50, 10], [50, 40], [10, 40]], layer: 'CUT', closed: true },
+    { pts: [[20, 20], [40, 20], [30, 35]], layer: 'GUIDE', closed: true },
+  ], 210);
+  check('DXF: sections present', ['HEADER', 'TABLES', 'ENTITIES', 'EOF'].every((s) => dxf.includes(s)));
+  check('DXF: R12 version tag', dxf.includes('AC1009'));
+  check('DXF: layer table has CUT and GUIDE', dxf.includes('\nCUT\n') && dxf.includes('\nGUIDE\n'));
+  check('DXF: two polylines, seven vertices', (dxf.match(/\nPOLYLINE\n/g) || []).length === 2 && (dxf.match(/\nVERTEX\n/g) || []).length === 7);
+  check('DXF: closed flag set', dxf.includes('\n70\n1\n'));
+  check('DXF: y flipped to y-up', dxf.includes('\n20\n200.000\n')); // 210 - 10
+}
+
+// --- multi-page PDF ---
+{
+  const fakeJpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 0xff, 0xd9]);
+  const pdf = toPDFMultiJPEG(
+    [{ jpeg: fakeJpeg, pxW: 100, pxH: 80 }, { jpeg: fakeJpeg, pxW: 100, pxH: 80 }, { jpeg: fakeJpeg, pxW: 100, pxH: 80 }],
+    595.28, 841.89, 'Cut Sheets');
+  const text = new TextDecoder('latin1').decode(pdf);
+  check('PDF multi: 3 kids declared', text.includes('/Kids [3 0 R 6 0 R 9 0 R] /Count 3'));
+  check('PDF multi: all 12 objects present', [...Array(12)].every((_, k) => text.includes(`${k + 1} 0 obj`)));
+  check('PDF multi: xref size 13', text.includes('/Size 13'));
+  check('PDF multi: three images', (text.match(/\/DCTDecode/g) || []).length === 3);
+  // xref offsets all point at their objects
+  const xrefAt = text.indexOf('xref\n');
+  const lines = text.slice(xrefAt).split('\n').slice(3, 15);
+  let offsetsOk = true;
+  lines.forEach((ln, k) => {
+    const off = parseInt(ln.slice(0, 10), 10);
+    if (!new TextDecoder('latin1').decode(pdf.slice(off, off + 10)).startsWith(`${k + 1} 0 obj`)) offsetsOk = false;
+  });
+  check('PDF multi: xref offsets valid', offsetsOk);
 }
 
 if (failures) { console.error(`\n${failures} check(s) FAILED`); process.exit(1); }
