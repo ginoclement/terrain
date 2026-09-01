@@ -8,9 +8,8 @@ import {
   smoothGrid, flattenWater, quantizeContours, embossRoute, tileRanges, extractSubgrid,
   interlockedTileFilters, splitAtHeight,
 } from './heightops.js';
-import { toBinarySTL, toAsciiSTL, toOBJ, toPLY, to3MFFiles, to3MFColorFiles, toGLB, toPDFWithJPEG, toPDFMultiJPEG, toDXF } from './exporters.js';
+import { toBinarySTL, toAsciiSTL, toOBJ, toPLY, to3MFFiles, to3MFColorFiles, toGLB } from './exporters.js';
 import { TerrainPreview, LAND_GRADIENT, SEA_GRADIENT, gradientColor } from './preview3d.js';
-import { buildTopoSVG, buildCutSheets } from './topomap.js';
 
 const $ = (id) => document.getElementById(id);
 const EARTH_RADIUS = 6371000;
@@ -42,6 +41,7 @@ const selMgr = new SelectionManager(map, {
     const slider = $('rotation');
     $('btn-batch-add').disabled = !sel;
     $('btn-topo-open').disabled = !sel;
+    topo2d?.onSelectionChange(sel);
     if (!sel) {
       info.textContent = 'No selection yet — pick a tool and draw on the map.';
       $('btn-generate').disabled = true;
@@ -520,6 +520,7 @@ $('btn-generate').addEventListener('click', async () => {
 
     preview.setMesh(mesh.positions, mesh.indices, info.seaZ);
     setPreviewOpen(true);
+    setPanelMode('3d');
 
     const volumeCm3 = meshVolume(mesh.positions, mesh.indices) / 1000;
     const gramsSolid = volumeCm3 * 1.24; // PLA density
@@ -546,234 +547,51 @@ $('btn-generate').addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Topographic map export (2D)
+// 2D map rendering (lazy-loaded module) + panel mode switch
 
 let lastPlaceName = null;
-let topoResult = null; // { svg, pageW, pageH, dpi, paperMMW, paperMMH }
+let topo2d = null;
 
-const PAPER_MM = { a4p: [210, 297], a4l: [297, 210], a3p: [297, 420], a3l: [420, 297], letp: [215.9, 279.4], letl: [279.4, 215.9] };
-
-function topoPageSize() {
-  const paper = $('topo-paper').value;
-  if (paper === 'custom') {
-    const w = Math.max(400, Math.min(8000, parseInt($('topo-px-w').value, 10) || 1600));
-    const h = Math.max(400, Math.min(8000, parseInt($('topo-px-h').value, 10) || 1200));
-    return { pageW: w, pageH: h, dpi: 96, paperMMW: (w / 96) * 25.4, paperMMH: (h / 96) * 25.4 };
-  }
-  const [mmW, mmH] = PAPER_MM[paper];
-  const dpi = parseInt($('topo-dpi').value, 10) || 150;
-  return {
-    pageW: Math.round((mmW / 25.4) * dpi),
-    pageH: Math.round((mmH / 25.4) * dpi),
-    dpi,
-    paperMMW: mmW,
-    paperMMH: mmH,
-  };
-}
-
-$('topo-paper').addEventListener('change', () => {
-  const custom = $('topo-paper').value === 'custom';
-  $('topo-dpi-row').style.display = custom ? 'none' : 'flex';
-  $('topo-px-row').style.display = custom ? 'flex' : 'none';
-});
-
-$('topo-style').addEventListener('change', () => {
-  const lineArt = $('topo-style').value === 'lineart';
-  $('topo-hillshade').checked = !lineArt;
-  $('topo-hypso').checked = !lineArt;
-  if (lineArt) $('topo-contours').checked = true;
-});
-
-$('btn-topo-open').addEventListener('click', () => {
-  if (!selMgr.selection) return;
-  if (!$('topo-title-text').value && lastPlaceName) $('topo-title-text').value = lastPlaceName;
-  $('topo-modal').hidden = false;
-});
-$('btn-close-topo').addEventListener('click', () => { $('topo-modal').hidden = true; });
-$('topo-modal').addEventListener('click', (ev) => {
-  if (ev.target === $('topo-modal')) $('topo-modal').hidden = true;
-});
-
-$('btn-topo-render').addEventListener('click', async () => {
-  const sel = selMgr.selection;
-  if (!sel) return;
-  const btn = $('btn-topo-render');
-  btn.disabled = true;
-  $('topo-info').textContent = 'Rendering…';
-  try {
-    const { pageW, pageH, dpi, paperMMW, paperMMH } = topoPageSize();
-    // Sample the DEM at a fixed high resolution independent of model settings.
-    const { gridW, gridH } = gridSizeForSelection(sel, 512);
-    const { elev } = await fetchElevationGrid(sourceSelect.value, sel.bbox, gridW, gridH, {
-      apiKey: $('maptiler-key').value.trim(),
-      onProgress: (msg) => { $('topo-info').textContent = msg; },
+async function ensureTopo2D() {
+  if (!topo2d) {
+    const { initTopo2D } = await import('./topo2d.js');
+    topo2d = initTopo2D({
+      getSelection: () => selMgr.selection,
+      getSourceId: () => sourceSelect.value,
+      getApiKey: () => $('maptiler-key').value.trim(),
+      getPlaceName: () => lastPlaceName,
+      fetchWaterFeatures,
+      download,
+      zipDownload,
     });
-    let waterLines = [], waterPolys = [];
-    if ($('topo-water').checked) {
-      try {
-        const feats = await fetchWaterFeatures(sel.bbox, (msg) => { $('topo-info').textContent = msg; });
-        waterLines = feats.lines;
-        waterPolys = feats.polys;
-      } catch (err) {
-        console.warn('Water fetch failed', err);
-      }
-    }
-    $('topo-info').textContent = 'Drawing map…';
-    const opts = {
-      contours: $('topo-contours').checked,
-      contourInterval: parseFloat($('topo-interval').value) || 0,
-      contourLabels: $('topo-labels').checked,
-      lineArt: $('topo-style').value === 'lineart',
-      hillshade: $('topo-hillshade').checked,
-      hypso: $('topo-hypso').checked,
-      water: $('topo-water').checked,
-      title: $('topo-title').checked,
-      titleText: $('topo-title-text').value.trim() || 'Topographic Map',
-      scaleBar: $('topo-scalebar').checked,
-      grid: $('topo-grid').checked,
-      legend: $('topo-legend').checked,
-      dpi,
-      paperMMW,
-    };
-    const { svg, contourInterval, scaleRatio } = buildTopoSVG({
-      elev, W: gridW, H: gridH, bbox: sel.bbox, pageW, pageH, opts, waterLines, waterPolys,
-    });
-    topoResult = {
-      svg, pageW, pageH, dpi, paperMMW, paperMMH,
-      elev, gridW, gridH, bbox: [...sel.bbox],
-      titleText: opts.titleText,
-      name: (opts.titleText || 'topo-map').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-    };
-    const blob = new Blob([svg], { type: 'image/svg+xml' });
-    const img = $('topo-preview-img');
-    if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
-    img.dataset.url = URL.createObjectURL(blob);
-    img.src = img.dataset.url;
-    $('topo-info').textContent = `${pageW} × ${pageH} px · contours every ${contourInterval} m · scale ≈ 1:${scaleRatio.toLocaleString()}`;
-    ['btn-topo-svg', 'btn-topo-png', 'btn-topo-pdf', 'btn-cut-svg', 'btn-cut-dxf', 'btn-cut-pdf'].forEach((id) => { $(id).disabled = false; });
-  } catch (err) {
-    console.error(err);
-    $('topo-info').textContent = `Failed: ${err.message}`;
-  } finally {
-    btn.disabled = false;
+    topo2d.onSelectionChange(selMgr.selection);
   }
-});
-
-async function svgToCanvas(svg, pageW, pageH) {
-  const img = new Image();
-  img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-  await img.decode();
-  const canvas = document.createElement('canvas');
-  canvas.width = pageW;
-  canvas.height = pageH;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, pageW, pageH);
-  ctx.drawImage(img, 0, 0, pageW, pageH);
-  URL.revokeObjectURL(img.src);
-  return canvas;
+  return topo2d;
 }
 
-function topoRasterCanvas() {
-  return svgToCanvas(topoResult.svg, topoResult.pageW, topoResult.pageH);
-}
-
-// -- layered cut sheets -----------------------------------------------------
-
-function buildSheetsFromLast() {
-  const { elev, gridW, gridH, bbox, pageW, pageH, paperMMW, titleText } = topoResult;
-  const result = buildCutSheets({
-    elev, W: gridW, H: gridH, bbox, pageW, pageH, paperMMW,
-    interval: parseFloat($('topo-interval').value) || 0,
-    title: titleText,
+async function setPanelMode(mode) {
+  document.querySelectorAll('.mode-btn').forEach((b) => {
+    const active = b.dataset.mode === mode;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-checked', String(active));
   });
-  if (!result.sheets.length) throw new Error('No layers produced — try a smaller contour interval.');
-  return result;
+  $('panel-3d').hidden = mode !== '3d';
+  $('panel-2d').hidden = mode !== '2d';
+  if (mode === '2d') await ensureTopo2D();
 }
 
-$('btn-cut-svg').addEventListener('click', () => {
-  if (!topoResult) return;
-  try {
-    const { sheets, interval } = buildSheetsFromLast();
-    const files = {};
-    for (const s of sheets) files[`${s.name}.svg`] = s.svg;
-    zipDownload(files, `${topoResult.name}-cut-sheets.zip`);
-    $('topo-info').textContent = `Exported ${sheets.length} cut sheets (SVG) at ${interval} m per layer.`;
-  } catch (err) {
-    $('topo-info').textContent = `Cut sheets failed: ${err.message}`;
-  }
+document.querySelectorAll('.mode-btn').forEach((b) => {
+  b.addEventListener('click', () => setPanelMode(b.dataset.mode));
 });
 
-$('btn-cut-dxf').addEventListener('click', () => {
-  if (!topoResult) return;
-  try {
-    const { sheets, interval } = buildSheetsFromLast();
-    const files = {};
-    for (const s of sheets) {
-      const paths = [
-        ...s.cutLoops.map((pts) => ({ pts, layer: 'CUT', closed: true })),
-        ...s.guideLoops.map((pts) => ({ pts, layer: 'GUIDE', closed: true })),
-      ];
-      files[`${s.name}.dxf`] = toDXF(paths, topoResult.paperMMH);
-    }
-    zipDownload(files, `${topoResult.name}-cut-sheets-dxf.zip`);
-    $('topo-info').textContent = `Exported ${sheets.length} cut sheets (DXF, mm) at ${interval} m per layer.`;
-  } catch (err) {
-    $('topo-info').textContent = `Cut sheets failed: ${err.message}`;
-  }
+$('btn-topo-open').addEventListener('click', async () => {
+  setPreviewOpen(true);
+  await setPanelMode('2d');
 });
 
-$('btn-cut-pdf').addEventListener('click', async () => {
-  if (!topoResult) return;
-  try {
-    const { sheets, interval } = buildSheetsFromLast();
-    $('topo-info').textContent = `Rasterizing ${sheets.length} sheets…`;
-    const pages = [];
-    for (const s of sheets) {
-      const canvas = await svgToCanvas(s.svg, topoResult.pageW, topoResult.pageH);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-      pages.push({ jpeg: new Uint8Array(await blob.arrayBuffer()), pxW: canvas.width, pxH: canvas.height });
-    }
-    const wPt = (topoResult.paperMMW / 25.4) * 72;
-    const hPt = (topoResult.paperMMH / 25.4) * 72;
-    download(toPDFMultiJPEG(pages, wPt, hPt, `${topoResult.titleText} cut sheets`), `${topoResult.name}-cut-sheets.pdf`, 'application/pdf');
-    $('topo-info').textContent = `Exported ${sheets.length}-page cut-sheet PDF at ${interval} m per layer.`;
-  } catch (err) {
-    $('topo-info').textContent = `Cut sheets failed: ${err.message}`;
-  }
-});
-
-$('btn-topo-svg').addEventListener('click', () => {
-  if (!topoResult) return;
-  download(topoResult.svg, `${topoResult.name}.svg`, 'image/svg+xml');
-});
-$('btn-topo-png').addEventListener('click', async () => {
-  if (!topoResult) return;
-  try {
-    $('topo-info').textContent = 'Rasterizing PNG…';
-    const canvas = await topoRasterCanvas();
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-    download(blob, `${topoResult.name}.png`);
-    $('topo-info').textContent = 'PNG exported.';
-  } catch (err) {
-    $('topo-info').textContent = `PNG export failed: ${err.message}`;
-  }
-});
-$('btn-topo-pdf').addEventListener('click', async () => {
-  if (!topoResult) return;
-  try {
-    $('topo-info').textContent = 'Building PDF…';
-    const canvas = await topoRasterCanvas();
-    const jpegBlob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-    const jpegBytes = new Uint8Array(await jpegBlob.arrayBuffer());
-    const wPt = (topoResult.paperMMW / 25.4) * 72;
-    const hPt = (topoResult.paperMMH / 25.4) * 72;
-    const pdf = toPDFWithJPEG(jpegBytes, wPt, hPt, canvas.width, canvas.height, $('topo-title-text').value.trim() || 'Topographic Map');
-    download(pdf, `${topoResult.name}.pdf`, 'application/pdf');
-    $('topo-info').textContent = 'PDF exported.';
-  } catch (err) {
-    $('topo-info').textContent = `PDF export failed: ${err.message}`;
-  }
+$('btn-fullscreen').addEventListener('click', () => {
+  const on = $('preview-panel').classList.toggle('fullscreen');
+  $('btn-fullscreen').classList.toggle('active', on);
 });
 
 // ---------------------------------------------------------------------------

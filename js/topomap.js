@@ -273,11 +273,12 @@ export function buildTopoSVG(p) {
     if (elev[s] > maxE) maxE = elev[s];
   }
 
-  // Layout: margins depend on enabled furniture
+  // Layout: margins exist only for enabled furniture — with everything off
+  // the map bleeds to the page edges (desk mats, artwork).
   const base = Math.min(pageW, pageH);
-  const mTop = opts.title ? base * 0.085 : base * 0.03;
-  const mBottom = (opts.scaleBar || opts.legend) ? base * 0.085 : base * 0.03;
-  const mSide = opts.grid ? base * 0.055 : base * 0.03;
+  const mTop = opts.title ? base * 0.085 : 0;
+  const mBottom = (opts.scaleBar || opts.legend) ? base * 0.085 : (opts.grid ? base * 0.035 : 0);
+  const mSide = opts.grid ? base * 0.055 : 0;
   const availW = pageW - 2 * mSide;
   const availH = pageH - mTop - mBottom;
   const aspect = realWidthM / realHeightM;
@@ -434,7 +435,7 @@ export function buildTopoSVG(p) {
     `<g transform="translate(${fmt(mapX)},${fmt(mapY)})">` +
     `<clipPath id="mapclip"><rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}"/></clipPath>` +
     `<g clip-path="url(#mapclip)">${layers.join('')}</g>` +
-    `<rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}" fill="none" stroke="#222" stroke-width="${fmt(Math.max(1, base * 0.0018))}"/>` +
+    (opts.frame === false ? '' : `<rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}" fill="none" stroke="#222" stroke-width="${fmt(Math.max(1, base * 0.0018))}"/>`) +
     `</g>` +
     edgeLabels.join('') +
     furniture.join('') +
