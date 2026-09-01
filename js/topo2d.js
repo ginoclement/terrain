@@ -7,7 +7,7 @@
  */
 import { buildTopoSVG, buildCutSheets } from './topomap.js';
 import { toPDFMultiJPEG, toDXF } from './exporters.js';
-import { bboxDimensionsMeters } from './selection.js';
+import { bboxDimensionsMeters, buildSelectionMask } from './selection.js';
 import { fetchElevationGrid } from './elevation.js';
 
 const PAPER_MM = { a4p: [210, 297], a4l: [297, 210], a3p: [297, 420], a3l: [420, 297], letp: [215.9, 279.4], letl: [279.4, 215.9] };
@@ -118,6 +118,8 @@ export function initTopo2D(ctx) {
         }
       }
       info('Drawing map…');
+      // Same mask as the 3D pipeline: the map is clipped to the selection shape.
+      const mask = buildSelectionMask(sel, gridW, gridH);
       const opts = {
         contours: $('topo-contours').checked,
         contourInterval: parseFloat($('topo-interval').value) || 0,
@@ -132,15 +134,17 @@ export function initTopo2D(ctx) {
         grid: $('topo-grid').checked,
         legend: $('topo-legend').checked,
         frame: $('topo-frame').checked,
+        transparentBg: $('topo-transparent').checked,
         dpi,
         paperMMW,
       };
       const { svg, contourInterval, scaleRatio } = buildTopoSVG({
-        elev, W: gridW, H: gridH, bbox: sel.bbox, pageW, pageH, opts, waterLines, waterPolys,
+        elev, W: gridW, H: gridH, bbox: sel.bbox, pageW, pageH, opts, waterLines, waterPolys, mask,
       });
       result = {
         svg, pageW, pageH, dpi, paperMMW, paperMMH,
-        elev, gridW, gridH, bbox: [...sel.bbox],
+        elev, gridW, gridH, bbox: [...sel.bbox], mask,
+        transparent: opts.transparentBg,
         titleText: opts.titleText,
         name: (opts.titleText || 'topo-map').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
       };
@@ -162,7 +166,7 @@ export function initTopo2D(ctx) {
 
   // -- map exports ----------------------------------------------------------
 
-  async function svgToCanvas(svg, pageW, pageH) {
+  async function svgToCanvas(svg, pageW, pageH, transparent = false) {
     const img = new Image();
     img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
     await img.decode();
@@ -170,8 +174,10 @@ export function initTopo2D(ctx) {
     canvas.width = pageW;
     canvas.height = pageH;
     const cx2 = canvas.getContext('2d');
-    cx2.fillStyle = '#ffffff';
-    cx2.fillRect(0, 0, pageW, pageH);
+    if (!transparent) {
+      cx2.fillStyle = '#ffffff';
+      cx2.fillRect(0, 0, pageW, pageH);
+    }
     cx2.drawImage(img, 0, 0, pageW, pageH);
     URL.revokeObjectURL(img.src);
     return canvas;
@@ -184,7 +190,7 @@ export function initTopo2D(ctx) {
     if (!result) return;
     try {
       info('Rasterizing PNG…');
-      const canvas = await svgToCanvas(result.svg, result.pageW, result.pageH);
+      const canvas = await svgToCanvas(result.svg, result.pageW, result.pageH, result.transparent);
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
       ctx.download(blob, `${result.name}.png`);
       info('PNG exported.');
@@ -213,7 +219,7 @@ export function initTopo2D(ctx) {
   function buildSheets() {
     const { elev, gridW, gridH, bbox, pageW, pageH, paperMMW, titleText } = result;
     const sheets = buildCutSheets({
-      elev, W: gridW, H: gridH, bbox, pageW, pageH, paperMMW,
+      elev, W: gridW, H: gridH, bbox, pageW, pageH, paperMMW, mask: result.mask,
       interval: parseFloat($('topo-interval').value) || 0,
       title: titleText,
     });
