@@ -89,7 +89,13 @@ modules and fetches map data — any static server is fine.)
    lines with auto or custom interval and labeled index contours, hillshade
    relief, hypsometric tint, OSM water features, title block, scale bar
    with 1:N ratio, lat/lon graticule, north arrow + legend, and the map
-   frame. A **line-art preset** switches to pure black-on-white contour
+   frame. The map is **clipped to the selection shape** — a circular
+   selection yields a circular map, letters yield letter-shaped maps — and
+   a transparent-background option keeps the outside (and, without tint,
+   the inside ground) fully transparent in SVG/PNG for artwork overlays.
+   Layered cut sheets are intersected with the shape too, with the base
+   layer cut to the selection outline. A **line-art preset** switches to
+   pure black-on-white contour
    cartography. Sizing is not tied to paper: **Fit selection** follows your
    cutout's aspect (long side in px or mm), **Paper preset** covers
    A4/A3/Letter at 150/300 DPI, and **Custom size** takes exact px or

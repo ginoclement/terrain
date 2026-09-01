@@ -1,4 +1,4 @@
-import { niceStep, contourLevels, traceContours, traceClosedBands, polylineLength } from '../js/topomap.js';
+import { niceStep, contourLevels, traceContours, traceClosedBands, polylineLength, buildCutSheets } from '../js/topomap.js';
 import { toPDFWithJPEG, toPDFMultiJPEG, toDXF } from '../js/exporters.js';
 
 let failures = 0;
@@ -118,6 +118,46 @@ check('contourLevels includes negatives', JSON.stringify(contourLevels(-250, 120
   check('bands donut: outer + hole loops', loops2.length === 2, `got ${loops2.length}`);
   const allClosed = loops2.every((l) => Math.hypot(l[0][0] - l[l.length - 1][0], l[0][1] - l[l.length - 1][1]) < 1e-9);
   check('bands donut: all loops closed', allClosed);
+}
+
+// --- masked cut sheets: selection shape drives all layers ---
+{
+  const W = 61, H = 61;
+  const elev = new Float32Array(W * H);
+  const mask = new Uint8Array(W * H);
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      elev[i + j * W] = i * 10; // west-east slope, 0..600
+      mask[i + j * W] = Math.hypot(i - 30, j - 30) <= 25 ? 1 : 0;
+    }
+  }
+  const common = { elev, W, H, bbox: [7, 45.7, 8, 46.4], pageW: 1000, pageH: 1000, paperMMW: 300, title: 't', interval: 100 };
+
+  const masked = buildCutSheets({ ...common, mask });
+  const base = masked.sheets[0];
+  check('masked sheets: base is a single loop', base.cutLoops.length === 1, `got ${base.cutLoops.length}`);
+  check('masked sheets: base is circle-like, not a rectangle', base.cutLoops[0].length > 24, `pts=${base.cutLoops[0].length}`);
+  // circle roundness: radii from centroid roughly equal
+  const loopPx = base.cutLoops[0];
+  const cxm = loopPx.reduce((a, p) => a + p[0], 0) / loopPx.length;
+  const cym = loopPx.reduce((a, p) => a + p[1], 0) / loopPx.length;
+  const radii = loopPx.map(([x, y]) => Math.hypot(x - cxm, y - cym));
+  const rMax = Math.max(...radii), rMin = Math.min(...radii);
+  check('masked sheets: base loop is round', (rMax - rMin) / rMax < 0.12, `rMin=${rMin.toFixed(1)} rMax=${rMax.toFixed(1)}`);
+  // every band loop stays inside the base circle
+  let allInside = true;
+  for (const s of masked.sheets.slice(1)) {
+    for (const loop of s.cutLoops) {
+      for (const [x, y] of loop) {
+        if (Math.hypot(x - cxm, y - cym) > rMax + 3) allInside = false;
+      }
+    }
+  }
+  check('masked sheets: all band loops inside the shape', allInside);
+  check('masked sheets: multiple bands from masked min/max', masked.sheets.length >= 4, `layers=${masked.sheets.length}`);
+
+  const unmasked = buildCutSheets({ ...common });
+  check('unmasked sheets: base is the bbox rectangle', unmasked.sheets[0].cutLoops[0].length === 5);
 }
 
 // --- DXF structure ---

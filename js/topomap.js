@@ -258,20 +258,27 @@ function formatDeg(v, isLat) {
  * @param {Object} p.opts toggles + values (see app)
  * @param {Array} p.waterLines lng/lat polylines
  * @param {Array} p.waterPolys lng/lat rings
+ * @param {?Uint8Array} p.mask selection mask (same convention as the 3D
+ *   pipeline); when given, the whole map is clipped to the selection shape
+ *   and the frame follows its outline
  * @returns {{svg: string, contourInterval: number, scaleRatio: number}}
  */
 export function buildTopoSVG(p) {
-  const { elev, W, H, bbox, pageW, pageH, opts, waterLines = [], waterPolys = [] } = p;
+  const { elev, W, H, bbox, pageW, pageH, opts, waterLines = [], waterPolys = [], mask = null } = p;
   const [bw, bs, be, bn] = bbox;
   const midLat = ((bs + bn) / 2) * (Math.PI / 180);
   const realWidthM = (be - bw) * 111320 * Math.cos(midLat);
   const realHeightM = (bn - bs) * 111320;
 
+  // Stats over the selection only, so a circular cutout in a mountainous
+  // bbox picks its contour levels from what's actually shown.
   let minE = Infinity, maxE = -Infinity;
   for (let s = 0; s < elev.length; s++) {
+    if (mask && !mask[s]) continue;
     if (elev[s] < minE) minE = elev[s];
     if (elev[s] > maxE) maxE = elev[s];
   }
+  if (!isFinite(minE)) { minE = 0; maxE = 0; }
 
   // Layout: margins exist only for enabled furniture — with everything off
   // the map bleeds to the page edges (desk mats, artwork).
@@ -293,13 +300,32 @@ export function buildTopoSVG(p) {
   const lonX = (lon) => ((lon - bw) / (be - bw)) * mapW;
   const latY = (lat) => (1 - (lat - bs) / (bn - bs)) * mapH;
 
+  // Selection shape in map coordinates: the clip region and the frame both
+  // follow it, so a circular selection yields a circular map (letters/donuts
+  // work too — evenodd handles the holes).
+  let shapePath = null;
+  if (mask) {
+    const loops = traceClosedBands(Float32Array.from(mask), W, H, 0.5);
+    if (loops.length) {
+      shapePath = loops
+        .map((pts) => `M${pts.map(([x, y]) => `${fmt(gx(x))},${fmt(gy(y))}`).join('L')}Z`)
+        .join('');
+    }
+  }
+  const maskAt = (x, y) => {
+    if (!mask) return true;
+    const i = Math.max(0, Math.min(W - 1, Math.round(x)));
+    const j = Math.max(0, Math.min(H - 1, Math.round(y)));
+    return mask[i + j * W] === 1;
+  };
+
   const layers = [];
 
   // -- raster layers
   if (opts.hypso) {
     const c = renderHypsoCanvas(elev, W, H, minE, maxE);
     layers.push(`<image href="${c.toDataURL('image/png')}" x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}" preserveAspectRatio="none" image-rendering="optimizeQuality"/>`);
-  } else {
+  } else if (!opts.transparentBg) {
     layers.push(`<rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}" fill="#f7f4ec"/>`);
   }
   if (opts.hillshade) {
@@ -336,7 +362,8 @@ export function buildTopoSVG(p) {
         if (pts.length < 2) continue;
         const d = `M${pts.map(([x, y]) => `${fmt(gx(x))},${fmt(gy(y))}`).join('L')}`;
         (isIndex ? index : minor).push(`<path d="${d}"/>`);
-        if (isIndex && opts.contourLabels && polylineLength(pts) > (W + H) / 10 && labelCount < 60) {
+        if (isIndex && opts.contourLabels && polylineLength(pts) > (W + H) / 10 && labelCount < 60 &&
+            maskAt(pts[Math.floor(pts.length / 2)][0], pts[Math.floor(pts.length / 2)][1])) {
           const mid = Math.floor(pts.length / 2);
           const a = pts[Math.max(0, mid - 2)], b = pts[Math.min(pts.length - 1, mid + 2)];
           let ang = (Math.atan2(gy(b[1]) - gy(a[1]), gx(b[0]) - gx(a[0])) * 180) / Math.PI;
@@ -429,13 +456,19 @@ export function buildTopoSVG(p) {
     );
   }
 
+  const clipShape = shapePath
+    ? `<path d="${shapePath}" clip-rule="evenodd"/>`
+    : `<rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}"/>`;
+  const frameShape = shapePath
+    ? `<path d="${shapePath}" fill="none" fill-rule="evenodd" stroke="#222" stroke-width="${fmt(Math.max(1, base * 0.0018))}"/>`
+    : `<rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}" fill="none" stroke="#222" stroke-width="${fmt(Math.max(1, base * 0.0018))}"/>`;
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}" height="${pageH}" viewBox="0 0 ${pageW} ${pageH}">` +
-    `<rect width="${pageW}" height="${pageH}" fill="#ffffff"/>` +
+    (opts.transparentBg ? '' : `<rect width="${pageW}" height="${pageH}" fill="#ffffff"/>`) +
     `<g transform="translate(${fmt(mapX)},${fmt(mapY)})">` +
-    `<clipPath id="mapclip"><rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}"/></clipPath>` +
+    `<clipPath id="mapclip">${clipShape}</clipPath>` +
     `<g clip-path="url(#mapclip)">${layers.join('')}</g>` +
-    (opts.frame === false ? '' : `<rect x="0" y="0" width="${fmt(mapW)}" height="${fmt(mapH)}" fill="none" stroke="#222" stroke-width="${fmt(Math.max(1, base * 0.0018))}"/>`) +
+    (opts.frame === false ? '' : frameShape) +
     `</g>` +
     edgeLabels.join('') +
     furniture.join('') +
@@ -457,7 +490,7 @@ export function buildTopoSVG(p) {
  *   cutLoops/guideLoops are in page-millimeter coordinates (y down from sheet top).
  */
 export function buildCutSheets(p) {
-  const { elev, W, H, bbox, pageW, pageH, paperMMW, title } = p;
+  const { elev, W, H, bbox, pageW, pageH, paperMMW, title, mask = null } = p;
   const [bw, bs, be, bn] = bbox;
   const midLat = ((bs + bn) / 2) * (Math.PI / 180);
   const realWidthM = (be - bw) * 111320 * Math.cos(midLat);
@@ -465,8 +498,18 @@ export function buildCutSheets(p) {
 
   let minE = Infinity, maxE = -Infinity;
   for (let s = 0; s < elev.length; s++) {
+    if (mask && !mask[s]) continue;
     if (elev[s] < minE) minE = elev[s];
     if (elev[s] > maxE) maxE = elev[s];
+  }
+  if (!isFinite(minE)) { minE = 0; maxE = 0; }
+
+  // Outside the selection shape the field drops to -1e9, so every band loop
+  // is automatically intersected with the shape.
+  let field = elev;
+  if (mask) {
+    field = new Float32Array(elev.length);
+    for (let s = 0; s < elev.length; s++) field[s] = mask[s] ? elev[s] : -1e9;
   }
   let interval = p.interval;
   if (!(interval > 0)) interval = niceStep((maxE - minE) / 12) || 10;
@@ -496,14 +539,21 @@ export function buildCutSheets(p) {
   const loopsAtLevel = new Map();
   const getLoops = (level) => {
     if (!loopsAtLevel.has(level)) {
-      const loops = traceClosedBands(elev, W, H, level)
+      const loops = traceClosedBands(field, W, H, level)
         .map((pts) => pts.map(([x, y]) => [gx(x), gy(y)]))
         .filter((pts) => polylineLength(pts) >= minLoopLenPx);
       loopsAtLevel.set(level, loops);
     }
     return loopsAtLevel.get(level);
   };
+  // Base layer = the selection shape itself (falls back to the bbox rectangle
+  // for plain rectangular selections without a mask).
   const rectLoop = [[mapX, mapY], [mapX + mapW, mapY], [mapX + mapW, mapY + mapH], [mapX, mapY + mapH], [mapX, mapY]];
+  const baseLoops = mask
+    ? traceClosedBands(Float32Array.from(mask), W, H, 0.5)
+      .map((pts) => pts.map(([x, y]) => [gx(x), gy(y)]))
+      .filter((pts) => polylineLength(pts) >= minLoopLenPx)
+    : [rectLoop];
 
   const toPath = (pts) => `M${pts.map(([x, y]) => `${fmt(x)},${fmt(y)}`).join('L')}`;
   const toMM = (pts) => pts.map(([x, y]) => [x / pxPerMM, y / pxPerMM]);
@@ -511,7 +561,7 @@ export function buildCutSheets(p) {
   const sheets = [];
   const total = levels.length + 1;
   for (let k = 0; k <= levels.length; k++) {
-    const cutLoops = k === 0 ? [rectLoop] : getLoops(levels[k - 1]);
+    const cutLoops = k === 0 ? baseLoops : getLoops(levels[k - 1]);
     const guideLoops = k < levels.length ? getLoops(levels[k]) : [];
     if (!cutLoops.length) continue;
     const levelLabel = k === 0 ? `base (${Math.round(minE)} m+)` : `≥ ${Math.round(levels[k - 1])} m`;
