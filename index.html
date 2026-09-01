@@ -186,7 +186,7 @@
           <input type="number" id="base-height" value="3" min="0.4" max="30" step="0.5">
         </div>
         <button id="btn-generate" class="primary" disabled>Generate 3D model</button>
-        <button id="btn-topo-open" disabled title="Render the selected area as a printable 2D topographic map (SVG / PNG / PDF)">🗺 Topo map (2D)…</button>
+        <button id="btn-topo-open" disabled title="Open the 2D map renderer in the side panel (topo maps, line art, cut sheets)">🗺 2D map / topo</button>
       </section>
 
       <section>
@@ -239,104 +239,134 @@
 
     <aside id="preview-panel">
       <div class="panel-head">
-        <h2>3D preview</h2>
-        <label class="check-row"><input type="checkbox" id="wireframe-toggle"><span>Wireframe</span></label>
+        <div id="mode-switch" role="radiogroup" aria-label="Rendering mode">
+          <button class="mode-btn active" data-mode="3d" role="radio" aria-checked="true">3D model</button>
+          <button class="mode-btn" data-mode="2d" role="radio" aria-checked="false">2D map</button>
+        </div>
+        <button id="btn-fullscreen" class="ghost" title="Toggle full-size view">⛶</button>
         <button id="btn-close-preview" class="ghost" title="Close">✕</button>
       </div>
-      <canvas id="preview-canvas"></canvas>
-      <div id="stats" class="stats"></div>
-      <div class="export-grid">
-        <button class="export-btn primary" data-format="stl-binary" disabled>STL (binary)</button>
-        <button class="export-btn" data-format="stl-ascii" disabled>STL (ASCII)</button>
-        <button class="export-btn" data-format="3mf" disabled>3MF</button>
-        <button class="export-btn" data-format="obj" disabled>OBJ</button>
-        <button class="export-btn" data-format="ply" disabled>PLY</button>
-        <button class="export-btn" data-format="3mf-color" disabled title="Per-triangle elevation-band colors for multi-material printers">3MF (color)</button>
-        <button class="export-btn" data-format="glb" disabled title="Binary glTF with satellite imagery draped on top — for renders and full-color printing">GLB (textured)</button>
-        <button class="export-btn" data-format="tiles" disabled title="Requires 'Split into tiles' > 1×1">STL tiles (ZIP)</button>
-        <button class="export-btn" data-format="two-piece" disabled title="Requires a two-piece split elevation">Two-piece STL (ZIP)</button>
+
+      <div id="panel-3d" class="panel-mode">
+        <div class="panel-toolbar">
+          <label class="check-row"><input type="checkbox" id="wireframe-toggle"><span>Wireframe</span></label>
+        </div>
+        <canvas id="preview-canvas"></canvas>
+        <div id="stats" class="stats"></div>
+        <div class="export-grid">
+          <button class="export-btn primary" data-format="stl-binary" disabled>STL (binary)</button>
+          <button class="export-btn" data-format="stl-ascii" disabled>STL (ASCII)</button>
+          <button class="export-btn" data-format="3mf" disabled>3MF</button>
+          <button class="export-btn" data-format="obj" disabled>OBJ</button>
+          <button class="export-btn" data-format="ply" disabled>PLY</button>
+          <button class="export-btn" data-format="3mf-color" disabled title="Per-triangle elevation-band colors for multi-material printers">3MF (color)</button>
+          <button class="export-btn" data-format="glb" disabled title="Binary glTF with satellite imagery draped on top — for renders and full-color printing">GLB (textured)</button>
+          <button class="export-btn" data-format="tiles" disabled title="Requires 'Split into tiles' > 1×1">STL tiles (ZIP)</button>
+          <button class="export-btn" data-format="two-piece" disabled title="Requires a two-piece split elevation">Two-piece STL (ZIP)</button>
+        </div>
+      </div>
+
+      <div id="panel-2d" class="panel-mode" hidden>
+        <div class="preview-2d"><img id="topo-preview-img" alt="2D map preview"></div>
+        <p id="topo-info" class="hint panel-info"></p>
+        <div class="accordions">
+          <details open>
+            <summary>Style &amp; layers</summary>
+            <div class="field-row">
+              <label for="topo-style">Preset</label>
+              <select id="topo-style">
+                <option value="color" selected>Full color</option>
+                <option value="lineart">Line art (B/W contours)</option>
+              </select>
+            </div>
+            <label class="check-row"><input type="checkbox" id="topo-contours" checked><span>Contour lines</span></label>
+            <div class="field-row">
+              <label for="topo-interval">Interval (m, 0 = auto)</label>
+              <input type="number" id="topo-interval" value="0" min="0" step="5">
+            </div>
+            <label class="check-row"><input type="checkbox" id="topo-labels" checked><span>Elevation labels</span></label>
+            <label class="check-row"><input type="checkbox" id="topo-hillshade" checked><span>Hillshade relief</span></label>
+            <label class="check-row"><input type="checkbox" id="topo-hypso" checked><span>Hypsometric tint</span></label>
+            <label class="check-row"><input type="checkbox" id="topo-water" checked><span>Water &amp; rivers (OSM)</span></label>
+          </details>
+          <details>
+            <summary>Furniture</summary>
+            <label class="check-row"><input type="checkbox" id="topo-title" checked><span>Title</span></label>
+            <input type="text" id="topo-title-text" placeholder="Topographic Map" maxlength="60">
+            <label class="check-row"><input type="checkbox" id="topo-scalebar" checked><span>Scale bar + ratio</span></label>
+            <label class="check-row"><input type="checkbox" id="topo-grid" checked><span>Lat/lon grid</span></label>
+            <label class="check-row"><input type="checkbox" id="topo-legend" checked><span>North arrow + legend</span></label>
+            <label class="check-row"><input type="checkbox" id="topo-frame" checked><span>Map frame border</span></label>
+            <p class="hint">Turn everything here off for full-bleed output (desk mats, artwork).</p>
+          </details>
+          <details open>
+            <summary>Size &amp; format</summary>
+            <label class="radio-row"><input type="radio" name="topo-size-mode" value="fit" checked><span>Fit selection (aspect follows your cutout)</span></label>
+            <div class="size-sub" id="topo-fit-sub">
+              <div class="field-row">
+                <label for="topo-fit-long">Long side</label>
+                <span class="tile-selects">
+                  <input type="number" id="topo-fit-long" value="2000" min="100" max="12000" class="inline-num">
+                  <select id="topo-fit-unit"><option value="px" selected>px</option><option value="mm">mm</option></select>
+                </span>
+              </div>
+            </div>
+            <label class="radio-row"><input type="radio" name="topo-size-mode" value="paper"><span>Paper preset</span></label>
+            <div class="size-sub" id="topo-paper-sub" style="display:none">
+              <div class="field-row">
+                <label for="topo-paper">Page</label>
+                <select id="topo-paper">
+                  <option value="a4l" selected>A4 landscape</option>
+                  <option value="a4p">A4 portrait</option>
+                  <option value="a3l">A3 landscape</option>
+                  <option value="a3p">A3 portrait</option>
+                  <option value="letl">Letter landscape</option>
+                  <option value="letp">Letter portrait</option>
+                </select>
+              </div>
+            </div>
+            <label class="radio-row"><input type="radio" name="topo-size-mode" value="custom"><span>Custom size</span></label>
+            <div class="size-sub" id="topo-custom-sub" style="display:none">
+              <div class="field-row">
+                <label>W × H</label>
+                <span class="tile-selects">
+                  <input type="number" id="topo-px-w" value="1600" min="50" max="12000" class="inline-num">
+                  ×
+                  <input type="number" id="topo-px-h" value="1200" min="50" max="12000" class="inline-num">
+                  <select id="topo-custom-unit"><option value="px" selected>px</option><option value="mm">mm</option></select>
+                </span>
+              </div>
+              <p class="hint">Use mm for physical products — e.g. a 900 × 400 desk mat.</p>
+            </div>
+            <div class="field-row" id="topo-dpi-row">
+              <label for="topo-dpi">Print DPI (mm/paper sizes)</label>
+              <select id="topo-dpi">
+                <option value="150" selected>150 — draft</option>
+                <option value="300">300 — print</option>
+              </select>
+            </div>
+          </details>
+          <button id="btn-topo-render" class="primary" disabled>Render</button>
+          <details open>
+            <summary>Export map</summary>
+            <div class="cut-exports">
+              <button id="btn-topo-svg" disabled>SVG</button>
+              <button id="btn-topo-png" disabled>PNG</button>
+              <button id="btn-topo-pdf" disabled>PDF</button>
+            </div>
+          </details>
+          <details>
+            <summary>Layered cut sheets</summary>
+            <p class="hint">One sheet per elevation band for laser/Cricut cutting and stacking (uses the contour interval above; red = cut, dashed blue = next-layer glue guide).</p>
+            <div class="cut-exports">
+              <button id="btn-cut-svg" disabled>SVG (ZIP)</button>
+              <button id="btn-cut-dxf" disabled>DXF (ZIP)</button>
+              <button id="btn-cut-pdf" disabled>PDF</button>
+            </div>
+          </details>
+        </div>
       </div>
     </aside>
-  </div>
-
-  <div id="topo-modal" hidden>
-    <div class="modal-box">
-      <div class="panel-head">
-        <h2>Topographic map export</h2>
-        <span id="topo-info" class="hint"></span>
-        <button id="btn-close-topo" class="ghost" title="Close">✕</button>
-      </div>
-      <div class="topo-body">
-        <div class="topo-controls">
-          <h3>Style</h3>
-          <div class="field-row">
-            <label for="topo-style">Preset</label>
-            <select id="topo-style">
-              <option value="color" selected>Full color</option>
-              <option value="lineart">Line art (B/W contours)</option>
-            </select>
-          </div>
-          <h3>Map details</h3>
-          <label class="check-row"><input type="checkbox" id="topo-contours" checked><span>Contour lines</span></label>
-          <div class="field-row">
-            <label for="topo-interval">Interval (m, 0 = auto)</label>
-            <input type="number" id="topo-interval" value="0" min="0" step="5">
-          </div>
-          <label class="check-row"><input type="checkbox" id="topo-labels" checked><span>Elevation labels</span></label>
-          <label class="check-row"><input type="checkbox" id="topo-hillshade" checked><span>Hillshade relief</span></label>
-          <label class="check-row"><input type="checkbox" id="topo-hypso" checked><span>Hypsometric tint</span></label>
-          <label class="check-row"><input type="checkbox" id="topo-water" checked><span>Water &amp; rivers (OSM)</span></label>
-          <h3>Furniture</h3>
-          <label class="check-row"><input type="checkbox" id="topo-title" checked><span>Title</span></label>
-          <input type="text" id="topo-title-text" placeholder="Topographic Map" maxlength="60">
-          <label class="check-row"><input type="checkbox" id="topo-scalebar" checked><span>Scale bar + ratio</span></label>
-          <label class="check-row"><input type="checkbox" id="topo-grid" checked><span>Lat/lon grid</span></label>
-          <label class="check-row"><input type="checkbox" id="topo-legend" checked><span>North arrow + legend</span></label>
-          <h3>Size</h3>
-          <div class="field-row">
-            <label for="topo-paper">Page</label>
-            <select id="topo-paper">
-              <option value="a4l" selected>A4 landscape</option>
-              <option value="a4p">A4 portrait</option>
-              <option value="a3l">A3 landscape</option>
-              <option value="a3p">A3 portrait</option>
-              <option value="letl">Letter landscape</option>
-              <option value="letp">Letter portrait</option>
-              <option value="custom">Custom (pixels)</option>
-            </select>
-          </div>
-          <div class="field-row" id="topo-dpi-row">
-            <label for="topo-dpi">Print DPI</label>
-            <select id="topo-dpi">
-              <option value="150" selected>150 — draft</option>
-              <option value="300">300 — print</option>
-            </select>
-          </div>
-          <div class="field-row" id="topo-px-row" style="display:none">
-            <label>Pixels W × H</label>
-            <span class="tile-selects">
-              <input type="number" id="topo-px-w" value="1600" min="400" max="8000" class="inline-num">
-              ×
-              <input type="number" id="topo-px-h" value="1200" min="400" max="8000" class="inline-num">
-            </span>
-          </div>
-          <button id="btn-topo-render" class="primary">Render preview</button>
-          <h3>Layered cut sheets</h3>
-          <p class="hint">One sheet per elevation band for laser/Cricut cutting and stacking (uses the contour interval above; red = cut, dashed blue = next-layer glue guide). Render the preview first.</p>
-          <div class="cut-exports">
-            <button id="btn-cut-svg" disabled>SVG (ZIP)</button>
-            <button id="btn-cut-dxf" disabled>DXF (ZIP)</button>
-            <button id="btn-cut-pdf" disabled>PDF</button>
-          </div>
-        </div>
-        <div class="topo-preview"><img id="topo-preview-img" alt="Topo map preview"></div>
-      </div>
-      <div class="topo-exports">
-        <button id="btn-topo-svg" disabled>Download SVG</button>
-        <button id="btn-topo-png" disabled>Download PNG</button>
-        <button id="btn-topo-pdf" disabled>Download PDF</button>
-      </div>
-    </div>
   </div>
 
   <script type="module" src="js/app.js"></script>

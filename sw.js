@@ -21,6 +21,9 @@ const SHELL_ASSETS = [
   './js/heightops.js',
   './js/exporters.js',
   './js/preview3d.js',
+  './js/colors.js',
+  './js/topomap.js',
+  './js/topo2d.js',
 ];
 
 const CDN_HOSTS = ['unpkg.com', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];

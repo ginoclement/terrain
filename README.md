@@ -82,14 +82,19 @@ modules and fetches map data — any static server is fine.)
    - **Two-piece split at an elevation** — a lower and an upper piece;
      print them in different colors and stack the flat-bottomed upper piece
      on the lower one (e.g. white above the snow line).
-5. **Topo map (2D)** — render the selected area as a printable topographic
-   map instead of (or alongside) the 3D model. Everything is toggleable:
-   contour lines with auto or custom interval and labeled index contours,
-   hillshade relief, hypsometric tint, OSM water features, title block,
-   scale bar with 1:N ratio, lat/lon graticule, and north arrow + legend.
-   A **line-art preset** switches to pure black-on-white contour
-   cartography. Size by paper preset (A4/A3/Letter, portrait/landscape,
-   150 or 300 DPI) or exact pixels; export as SVG (vector — editable,
+5. **2D map mode** — the rendering panel switches between **3D model** and
+   **2D map** (the 2D controller loads on demand), so the live map stays
+   visible while you configure and re-render; a ⛶ button expands the panel
+   to full size. Everything is toggleable via accordion sections: contour
+   lines with auto or custom interval and labeled index contours, hillshade
+   relief, hypsometric tint, OSM water features, title block, scale bar
+   with 1:N ratio, lat/lon graticule, north arrow + legend, and the map
+   frame. A **line-art preset** switches to pure black-on-white contour
+   cartography. Sizing is not tied to paper: **Fit selection** follows your
+   cutout's aspect (long side in px or mm), **Paper preset** covers
+   A4/A3/Letter at 150/300 DPI, and **Custom size** takes exact px or
+   physical mm — e.g. a 900 × 400 mm desk mat. With all furniture off the
+   map renders full-bleed. Export as SVG (vector — editable,
    laser-cuttable), PNG, or a print-ready PDF.
    - **Layered cut sheets**: one sheet per elevation band for building a
      physical stacked-contour relief model — red closed cut paths (holes
@@ -153,6 +158,7 @@ js/mesh.js         watertight solid construction + decimation (pure, node-testab
 js/heightops.js    smoothing/water/contours/tiles/interlocks/splits (pure)
 js/exporters.js    STL/OBJ/PLY/3MF/color-3MF/GLB/PDF writers (pure, node-testable)
 js/topomap.js      2D topo map renderer: contours, rasters, furniture, SVG
+js/topo2d.js       2D panel controller (lazy-loaded on first use)
 js/colors.js       shared elevation color ramps
 sw.js              service worker (offline shell + tile cache)
 tests/             geometry, grid-ops, and exporter checks
