@@ -75,7 +75,12 @@ modules and fetches map data — any static server is fine.)
    counts dramatically. More formats and options:
    - **3MF (color)** — per-triangle elevation-band colors (bathymetric blues
      below sea level, hypsometric tints above) for multi-material printers
-     like Bambu/Prusa XL.
+     like Bambu/Prusa XL. A loaded trail gets its own named material, so
+     slicers offer it as a separate filament slot automatically.
+   - **STL + trail (ZIP)** — the terrain body and the trail ribbon as two
+     separate watertight STLs (the ribbon is embedded ~0.6 mm into the
+     surface so the parts overlap); import both as parts of one object in
+     any slicer and assign the trail its own filament.
    - **GLB (textured)** — binary glTF with Esri satellite imagery draped
      over the terrain, for renders or full-color printing services.
    - **Split into tiles** (up to 4×4) — each tile is a separate watertight
