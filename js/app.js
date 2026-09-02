@@ -400,17 +400,7 @@ async function computeModel(sel, S, onProgress = () => {}) {
     }
   }
 
-  // Route embossing
-  if (S.embossRouteOn && route) {
-    const lineWidthPx = Math.max(2, Math.round(gridW / 150));
-    const routeMask = rasterizePolylines(route.lines, sel.bbox, gridW, gridH, lineWidthPx);
-    for (let s = 0; s < routeMask.length; s++) {
-      if (routeMask[s] && !mask[s]) routeMask[s] = 0;
-    }
-    finalTop = embossRoute(finalTop, routeMask, S.routeRaiseMM);
-  }
-
-  // OSM waterways
+  // OSM waterways (before the trail, so the trail-free body keeps them)
   if (S.riversMode !== 'off') {
     try {
       const { lines } = await fetchWaterFeatures(sel.bbox, onProgress);
@@ -428,6 +418,20 @@ async function computeModel(sel, S, onProgress = () => {}) {
       console.warn('Waterway fetch failed', err);
       onProgress(`Rivers skipped (${err.message}).`);
     }
+  }
+
+  // Trail embossing — applied last so preRouteTop is the trail-free surface,
+  // letting exports split the trail into its own body/material.
+  let routeMask = null;
+  let preRouteTop = null;
+  if (S.embossRouteOn && route) {
+    const lineWidthPx = Math.max(2, Math.round(gridW / 150));
+    routeMask = rasterizePolylines(route.lines, sel.bbox, gridW, gridH, lineWidthPx);
+    for (let s = 0; s < routeMask.length; s++) {
+      if (routeMask[s] && !mask[s]) routeMask[s] = 0;
+    }
+    preRouteTop = Float32Array.from(finalTop);
+    finalTop = embossRoute(finalTop, routeMask, S.routeRaiseMM);
   }
 
   // Base engraving (mirrored so it reads correctly from below)
@@ -468,7 +472,10 @@ async function computeModel(sel, S, onProgress = () => {}) {
   const seaZ = !S.waterFlatten && minElev < 0 ? S.baseMM + (0 - minElev) * zPerMeter : null;
   return {
     mesh,
-    grid: { gridW, gridH, topZ: finalTop, botZ, mask, xs, ys, minElev, zPerMeter, baseMM: S.baseMM },
+    grid: {
+      gridW, gridH, topZ: finalTop, botZ, mask, xs, ys, minElev, zPerMeter, baseMM: S.baseMM,
+      routeMask, preRouteTop, routeRaiseMM: S.routeRaiseMM,
+    },
     info: { widthM, heightM, minElev, maxElev, maxZ, zoom, seaZ, horizontalScale },
   };
 }
@@ -748,7 +755,7 @@ async function fetchImageryTexture(bbox, targetPx = 1024) {
 // ---------------------------------------------------------------------------
 // Color banding (for color 3MF)
 
-function buildColorBands(mesh, seaZ) {
+function buildColorBands(mesh, seaZ, grid = null) {
   const { positions, indices } = mesh;
   let minZ = Infinity, maxZ = -Infinity;
   for (let v = 2; v < positions.length; v += 3) {
@@ -763,14 +770,38 @@ function buildColorBands(mesh, seaZ) {
   const palette = [];
   for (let k = 0; k < seaBands; k++) palette.push(hex(gradientColor(SEA_GRADIENT, (k + 0.5) / seaBands)));
   for (let k = 0; k < landBands; k++) palette.push(hex(gradientColor(LAND_GRADIENT, (k + 0.5) / landBands)));
+
+  // Trail flag: triangles on the embossed trail surface get their own
+  // material, so multi-material slicers can assign it a separate filament.
+  const hasTrail = !!grid?.routeMask;
+  let trailIndex = -1;
+  if (hasTrail) {
+    trailIndex = palette.length;
+    palette.push('#FF2D88');
+  }
+  const maxX = grid ? grid.xs[grid.xs.length - 1] || 1 : 1;
+  const maxY = grid ? grid.ys[grid.ys.length - 1] || 1 : 1;
+  const onTrail = (x, y, z) => {
+    if (!hasTrail) return false;
+    const i = Math.max(0, Math.min(grid.gridW - 1, Math.round((x / maxX) * (grid.gridW - 1))));
+    const j = Math.max(0, Math.min(grid.gridH - 1, Math.round((y / maxY) * (grid.gridH - 1))));
+    const s = i + j * grid.gridW;
+    // only the raised surface, not base/bottom triangles under the trail
+    return grid.routeMask[s] === 1 && Math.abs(z - grid.topZ[s]) < grid.routeRaiseMM + 0.8;
+  };
+
   const landBase = hasSea ? Math.min(seaZ, maxZ) : minZ;
   const landSpan = maxZ - landBase || 1;
   const seaSpan = hasSea ? seaZ - minZ || 1 : 1;
   const triMaterial = new Uint8Array(indices.length / 3);
   for (let t = 0; t < triMaterial.length; t++) {
-    const a = indices[t * 3] * 3 + 2, b = indices[t * 3 + 1] * 3 + 2, c = indices[t * 3 + 2] * 3 + 2;
-    const z = (positions[a] + positions[b] + positions[c]) / 3;
-    if (hasSea && z < seaZ) {
+    const a = indices[t * 3] * 3, b = indices[t * 3 + 1] * 3, c = indices[t * 3 + 2] * 3;
+    const x = (positions[a] + positions[b] + positions[c]) / 3;
+    const y = (positions[a + 1] + positions[b + 1] + positions[c + 1]) / 3;
+    const z = (positions[a + 2] + positions[b + 2] + positions[c + 2]) / 3;
+    if (onTrail(x, y, z)) {
+      triMaterial[t] = trailIndex;
+    } else if (hasSea && z < seaZ) {
       triMaterial[t] = Math.min(seaBands - 1, Math.floor(((z - minZ) / seaSpan) * seaBands));
     } else {
       triMaterial[t] = seaBands + Math.min(landBands - 1, Math.max(0, Math.floor(((z - landBase) / landSpan) * landBands)));
@@ -1048,6 +1079,7 @@ function updateExportButtons() {
   document.querySelectorAll('.export-btn').forEach((b) => {
     if (b.dataset.format === 'tiles') b.disabled = !lastGrid || cols * rows < 2;
     else if (b.dataset.format === 'two-piece') b.disabled = !lastGrid || splitM <= 0;
+    else if (b.dataset.format === 'stl-trail') b.disabled = !lastGrid?.routeMask;
     else b.disabled = !lastMesh;
   });
 }
@@ -1107,6 +1139,32 @@ function exportTwoPiece() {
     : 'Only the lower piece had geometry at that split elevation.', 'info');
 }
 
+function exportTrailSplit() {
+  const { gridW, gridH, preRouteTop, routeMask, botZ, mask, xs, ys, routeRaiseMM } = lastGrid;
+  if (!routeMask || !preRouteTop) {
+    throw new Error('Load a trail and generate with "Emboss route" on first.');
+  }
+  // Body: the terrain without the raised trail.
+  const body = buildTerrainSolid({ width: gridW, height: gridH, topZ: preRouteTop, botZ, mask, xs, ys });
+  // Trail ribbon: raised surface on top, embedded ~0.6 mm into the body so
+  // the two parts overlap for slicer union.
+  const trailTop = new Float32Array(preRouteTop.length);
+  const trailBot = new Float32Array(preRouteTop.length);
+  for (let s = 0; s < preRouteTop.length; s++) {
+    trailTop[s] = preRouteTop[s] + routeRaiseMM;
+    trailBot[s] = Math.max(0.15, preRouteTop[s] - 0.6);
+  }
+  const trail = buildTerrainSolid({ width: gridW, height: gridH, topZ: trailTop, botZ: trailBot, mask: routeMask, xs, ys });
+  if (trail.triangleCount === 0) {
+    throw new Error('The trail does not cross this selection.');
+  }
+  zipDownload({
+    [`${lastMesh.name}-body.stl`]: toBinarySTL(body.positions, body.indices, `${lastMesh.name} body`),
+    [`${lastMesh.name}-trail.stl`]: toBinarySTL(trail.positions, trail.indices, `${lastMesh.name} trail`),
+  }, `${lastMesh.name}-trail-split.zip`);
+  status('Exported body + trail STLs — import both as parts of one object in your slicer and give the trail its own filament.', 'info');
+}
+
 async function exportGLB() {
   status('Fetching satellite texture…', 'busy', true);
   let texture = null;
@@ -1137,9 +1195,10 @@ const EXPORTERS = {
   ply: (m) => download(toPLY(m.positions, m.indices, m.name), `${m.name}.ply`, 'application/octet-stream'),
   '3mf': (m) => zipDownload(to3MFFiles(m.positions, m.indices, m.name), `${m.name}.3mf`),
   '3mf-color': (m) => {
-    const { palette, triMaterial } = buildColorBands(m, lastInfo?.seaZ ?? null);
+    const { palette, triMaterial } = buildColorBands(m, lastInfo?.seaZ ?? null, lastGrid);
     zipDownload(to3MFColorFiles(m.positions, m.indices, palette, triMaterial, m.name), `${m.name}-color.3mf`);
   },
+  'stl-trail': () => exportTrailSplit(),
   glb: () => exportGLB(),
   tiles: () => exportTiles(),
   'two-piece': () => exportTwoPiece(),
