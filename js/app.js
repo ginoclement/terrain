@@ -501,6 +501,14 @@ $('wireframe-toggle').addEventListener('change', (ev) => preview.setWireframe(ev
 function setPreviewOpen(on) {
   $('preview-panel').classList.toggle('open', on);
   $('resize-preview').style.display = on ? 'block' : 'none';
+  // Closing while fullscreen must also drop the fullscreen state, or the
+  // fixed-position panel keeps covering the app with zero panel width.
+  if (!on) setFullscreen(false);
+}
+
+function setFullscreen(on) {
+  $('preview-panel').classList.toggle('fullscreen', on);
+  $('btn-fullscreen').classList.toggle('active', on);
 }
 $('btn-close-preview').addEventListener('click', () => setPreviewOpen(false));
 
@@ -590,8 +598,13 @@ $('btn-topo-open').addEventListener('click', async () => {
 });
 
 $('btn-fullscreen').addEventListener('click', () => {
-  const on = $('preview-panel').classList.toggle('fullscreen');
-  $('btn-fullscreen').classList.toggle('active', on);
+  setFullscreen(!$('preview-panel').classList.contains('fullscreen'));
+});
+
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && $('preview-panel').classList.contains('fullscreen')) {
+    setFullscreen(false);
+  }
 });
 
 // ---------------------------------------------------------------------------
