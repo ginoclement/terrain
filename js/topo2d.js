@@ -138,12 +138,13 @@ export function initTopo2D(ctx) {
         dpi,
         paperMMW,
       };
+      const trailLines = ctx.getRoute()?.lines || [];
       const { svg, contourInterval, scaleRatio } = buildTopoSVG({
-        elev, W: gridW, H: gridH, bbox: sel.bbox, pageW, pageH, opts, waterLines, waterPolys, mask,
+        elev, W: gridW, H: gridH, bbox: sel.bbox, pageW, pageH, opts, waterLines, waterPolys, mask, trailLines,
       });
       result = {
         svg, pageW, pageH, dpi, paperMMW, paperMMH,
-        elev, gridW, gridH, bbox: [...sel.bbox], mask,
+        elev, gridW, gridH, bbox: [...sel.bbox], mask, trailLines,
         transparent: opts.transparentBg,
         titleText: opts.titleText,
         name: (opts.titleText || 'topo-map').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
@@ -219,7 +220,7 @@ export function initTopo2D(ctx) {
   function buildSheets() {
     const { elev, gridW, gridH, bbox, pageW, pageH, paperMMW, titleText } = result;
     const sheets = buildCutSheets({
-      elev, W: gridW, H: gridH, bbox, pageW, pageH, paperMMW, mask: result.mask,
+      elev, W: gridW, H: gridH, bbox, pageW, pageH, paperMMW, mask: result.mask, trailLines: result.trailLines,
       interval: parseFloat($('topo-interval').value) || 0,
       title: titleText,
     });
@@ -242,12 +243,13 @@ export function initTopo2D(ctx) {
   $('btn-cut-dxf').addEventListener('click', () => {
     if (!result) return;
     try {
-      const { sheets, interval } = buildSheets();
+      const { sheets, interval, trailMM } = buildSheets();
       const files = {};
       for (const s of sheets) {
         const paths = [
           ...s.cutLoops.map((pts) => ({ pts, layer: 'CUT', closed: true })),
           ...s.guideLoops.map((pts) => ({ pts, layer: 'GUIDE', closed: true })),
+          ...trailMM.map((pts) => ({ pts, layer: 'TRAIL', closed: false })),
         ];
         files[`${s.name}.dxf`] = toDXF(paths, result.paperMMH);
       }

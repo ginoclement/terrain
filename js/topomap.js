@@ -264,7 +264,7 @@ function formatDeg(v, isLat) {
  * @returns {{svg: string, contourInterval: number, scaleRatio: number}}
  */
 export function buildTopoSVG(p) {
-  const { elev, W, H, bbox, pageW, pageH, opts, waterLines = [], waterPolys = [], mask = null } = p;
+  const { elev, W, H, bbox, pageW, pageH, opts, waterLines = [], waterPolys = [], mask = null, trailLines = [] } = p;
   const [bw, bs, be, bn] = bbox;
   const midLat = ((bs + bn) / 2) * (Math.PI / 180);
   const realWidthM = (be - bw) * 111320 * Math.cos(midLat);
@@ -387,6 +387,19 @@ export function buildTopoSVG(p) {
     if (labels.length) layers.push(`<g>${labels.join('')}</g>`);
   }
 
+  // -- breadcrumb trail (drawn above contours, clipped to the shape)
+  if (trailLines.length) {
+    const tw = Math.max(1, mapW * 0.0022);
+    const paths = trailLines
+      .filter((line) => line.length >= 2)
+      .map((line) =>
+        `<polyline points="${line.map(([lo, la]) => `${fmt(lonX(lo))},${fmt(latY(la))}`).join(' ')}" ` +
+        `fill="none" stroke-linejoin="round" stroke-linecap="round"/>`)
+      .join('');
+    layers.push(`<g stroke="#ffffff" stroke-width="${fmt(tw * 2)}" opacity="0.65">${paths}</g>`);
+    layers.push(`<g stroke="#e5306e" stroke-width="${fmt(tw)}">${paths}</g>`);
+  }
+
   // -- graticule
   const edgeLabels = [];
   if (opts.grid) {
@@ -443,6 +456,7 @@ export function buildTopoSVG(p) {
       `<line x1="${fmt(lx - fs * 11)}" y1="${fmt(ly)}" x2="${fmt(lx - fs * 9)}" y2="${fmt(ly)}" stroke="${opts.lineArt ? '#000000' : '#8a5a2b'}" stroke-width="2"/>` +
       `<text x="${fmt(lx - fs * 8.6)}" y="${fmt(ly + fs * 0.35)}">contours every ${interval >= 1 ? Math.round(interval) : interval} m</text>` +
       (opts.water ? `<line x1="${fmt(lx - fs * 11)}" y1="${fmt(ly + fs * 1.6)}" x2="${fmt(lx - fs * 9)}" y2="${fmt(ly + fs * 1.6)}" stroke="#4a86b8" stroke-width="2"/><text x="${fmt(lx - fs * 8.6)}" y="${fmt(ly + fs * 1.95)}">waterways</text>` : '') +
+      (trailLines.length ? `<line x1="${fmt(lx - fs * 11)}" y1="${fmt(ly + fs * 3.2)}" x2="${fmt(lx - fs * 9)}" y2="${fmt(ly + fs * 3.2)}" stroke="#e5306e" stroke-width="2"/><text x="${fmt(lx - fs * 8.6)}" y="${fmt(ly + fs * 3.55)}">trail</text>` : '') +
       `</g>`
     );
     // North arrow above legend, top-right inside margin
@@ -490,7 +504,7 @@ export function buildTopoSVG(p) {
  *   cutLoops/guideLoops are in page-millimeter coordinates (y down from sheet top).
  */
 export function buildCutSheets(p) {
-  const { elev, W, H, bbox, pageW, pageH, paperMMW, title, mask = null } = p;
+  const { elev, W, H, bbox, pageW, pageH, paperMMW, title, mask = null, trailLines = [] } = p;
   const [bw, bs, be, bn] = bbox;
   const midLat = ((bs + bn) / 2) * (Math.PI / 180);
   const realWidthM = (be - bw) * 111320 * Math.cos(midLat);
@@ -558,6 +572,14 @@ export function buildCutSheets(p) {
   const toPath = (pts) => `M${pts.map(([x, y]) => `${fmt(x)},${fmt(y)}`).join('L')}`;
   const toMM = (pts) => pts.map(([x, y]) => [x / pxPerMM, y / pxPerMM]);
 
+  // Breadcrumb trail in page coordinates: engraved on every sheet, clipped to
+  // that sheet's cut region so the visible part matches the stacked model.
+  const lonX = (lon) => mapX + ((lon - bw) / (be - bw)) * mapW;
+  const latY = (lat) => mapY + (1 - (lat - bs) / (bn - bs)) * mapH;
+  const trailPage = trailLines
+    .filter((line) => line.length >= 2)
+    .map((line) => line.map(([lo, la]) => [lonX(lo), latY(la)]));
+
   const sheets = [];
   const total = levels.length + 1;
   for (let k = 0; k <= levels.length; k++) {
@@ -566,6 +588,13 @@ export function buildCutSheets(p) {
     if (!cutLoops.length) continue;
     const levelLabel = k === 0 ? `base (${Math.round(minE)} m+)` : `≥ ${Math.round(levels[k - 1])} m`;
     const label = `${title ? `${title} · ` : ''}layer ${k + 1}/${total} · ${levelLabel} · ${interval} m steps`;
+    const clipId = `sheetclip${k}`;
+    const trailSvg = trailPage.length
+      ? `<clipPath id="${clipId}"><path d="${cutLoops.map((pts) => `${toPath(pts)}Z`).join('')}" clip-rule="evenodd"/></clipPath>` +
+        `<g clip-path="url(#${clipId})" fill="none" stroke="#e5306e" stroke-width="${fmt(Math.max(0.6, pxPerMM * 0.2))}" stroke-linejoin="round" stroke-linecap="round">` +
+        trailPage.map((pts) => `<path d="${toPath(pts)}"/>`).join('') +
+        `</g>`
+      : '';
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}" height="${pageH}" viewBox="0 0 ${pageW} ${pageH}">` +
       `<rect width="${pageW}" height="${pageH}" fill="#ffffff"/>` +
@@ -573,6 +602,7 @@ export function buildCutSheets(p) {
       `<g fill="none" stroke="#0066ff" stroke-width="${fmt(Math.max(0.6, pxPerMM * 0.15))}" stroke-dasharray="${fmt(pxPerMM * 1.2)} ${fmt(pxPerMM * 0.9)}">` +
       guideLoops.map((pts) => `<path d="${toPath(pts)}"/>`).join('') +
       `</g>` +
+      trailSvg +
       `<g fill="none" stroke="#ff0000" stroke-width="${fmt(Math.max(0.5, pxPerMM * 0.1))}">` +
       cutLoops.map((pts) => `<path d="${toPath(pts)}"/>`).join('') +
       `</g>` +
@@ -590,6 +620,7 @@ export function buildCutSheets(p) {
     sheets,
     levels,
     interval,
+    trailMM: trailPage.map(toMM),
     mapWmm: mapW / pxPerMM,
     mapHmm: mapH / pxPerMM,
   };

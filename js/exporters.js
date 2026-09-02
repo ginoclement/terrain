@@ -348,8 +348,8 @@ export function toDXF(paths, sheetHmm) {
   push(9, '$ACADVER'); push(1, 'AC1009');
   push(0, 'ENDSEC');
   push(0, 'SECTION'); push(2, 'TABLES');
-  push(0, 'TABLE'); push(2, 'LAYER'); push(70, 2);
-  for (const [name, color] of [['CUT', 1], ['GUIDE', 5]]) {
+  push(0, 'TABLE'); push(2, 'LAYER'); push(70, 3);
+  for (const [name, color] of [['CUT', 1], ['GUIDE', 5], ['TRAIL', 6]]) {
     push(0, 'LAYER'); push(2, name); push(70, 0); push(62, color); push(6, 'CONTINUOUS');
   }
   push(0, 'ENDTAB'); push(0, 'ENDSEC');
