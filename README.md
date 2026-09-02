@@ -38,8 +38,12 @@ modules and fetches map data — any static server is fine.)
    - **Moving**: with no tool active, drag an existing selection to
      reposition it (the cursor changes to a move cursor over it).
    - **Import**: load a **GeoJSON** polygon (e.g. a country or county
-     boundary) as the cutout shape, or a **GPX** track to emboss a hiking
-     route as a raised line on the model.
+     boundary) as the cutout shape, or a breadcrumb trail — **GPX, TCX,
+     KML/KMZ, Garmin FIT (binary), or GeoJSON lines** — which shows on the
+     live map, embosses onto the 3D model, draws on 2D map exports, and
+     engraves onto layered cut sheets (dedicated TRAIL layer in DXF).
+     Multi-segment recordings stay separate lines. See ROADMAP.md for
+     planned Strava/Garmin account linking.
    - **Custom fonts**: upload any TTF/OTF/WOFF file for the letters tool.
    - **Profile tool**: drag a line to see its elevation cross-section (with
      total distance and climb) before committing to a model.

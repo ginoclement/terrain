@@ -33,7 +33,7 @@ function status(msg, kind = 'info', sticky = false) {
 
 const map = createMap('map');
 let terrain3D = false;
-let route = null; // { name, points: [[lon,lat],...] }
+let route = null; // { name, lines: [[[lon,lat],...], ...] } — one line per track segment
 
 const selMgr = new SelectionManager(map, {
   onSelectionChange(sel) {
@@ -125,10 +125,27 @@ $('font-upload').addEventListener('change', async (ev) => {
 
 function setRouteState(newRoute) {
   route = newRoute;
-  map.getSource('route') && setRoute(map, route ? route.points : []);
+  map.getSource('route') && setRoute(map, route ? route.lines : []);
   $('route-row').style.display = route ? 'flex' : 'none';
   $('route-emboss-row').style.display = route ? 'flex' : 'none';
-  if (route) $('route-info').textContent = `Route “${route.name}” (${route.points.length} pts)`;
+  if (route) {
+    const pts = route.lines.reduce((a, l) => a + l.length, 0);
+    const segs = route.lines.length > 1 ? `, ${route.lines.length} segments` : '';
+    $('route-info').textContent = `Trail “${route.name}” (${pts} pts${segs})`;
+  }
+}
+
+function routeBounds(lines) {
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  for (const line of lines) {
+    for (const [lon, lat] of line) {
+      if (lon < w) w = lon;
+      if (lon > e) e = lon;
+      if (lat < s) s = lat;
+      if (lat > n) n = lat;
+    }
+  }
+  return [w, s, e, n];
 }
 
 function downsample(points, maxPoints) {
@@ -138,18 +155,6 @@ function downsample(points, maxPoints) {
   for (let k = 0; k < maxPoints; k++) out.push(points[Math.floor(k * step)]);
   out.push(points[points.length - 1]);
   return out;
-}
-
-function parseGPX(xmlText, name) {
-  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-  let nodes = [...doc.querySelectorAll('trkpt')];
-  if (!nodes.length) nodes = [...doc.querySelectorAll('rtept')];
-  if (!nodes.length) nodes = [...doc.querySelectorAll('wpt')];
-  const points = nodes
-    .map((n) => [parseFloat(n.getAttribute('lon')), parseFloat(n.getAttribute('lat'))])
-    .filter((p) => isFinite(p[0]) && isFinite(p[1]));
-  if (points.length < 2) throw new Error('No track points found in GPX file');
-  return { name: doc.querySelector('trk > name, name')?.textContent || name, points: downsample(points, 3000) };
 }
 
 function largestOuterRing(geojson) {
@@ -170,38 +175,17 @@ function largestOuterRing(geojson) {
   return best;
 }
 
-function firstLineString(geojson) {
-  let line = null;
-  const walkGeom = (g) => {
-    if (!g || line) return;
-    if (g.type === 'LineString') line = g.coordinates;
-    else if (g.type === 'MultiLineString') line = g.coordinates.flat();
-    else if (g.type === 'GeometryCollection') g.geometries.forEach(walkGeom);
-  };
-  if (geojson.type === 'FeatureCollection') geojson.features.forEach((f) => walkGeom(f.geometry));
-  else if (geojson.type === 'Feature') walkGeom(geojson.geometry);
-  else walkGeom(geojson);
-  return line;
-}
-
 $('btn-import').addEventListener('click', () => $('import-file').click());
 $('import-file').addEventListener('change', async (ev) => {
   const file = ev.target.files[0];
   ev.target.value = '';
   if (!file) return;
   try {
-    const text = await file.text();
-    if (/\.gpx$/i.test(file.name) || text.includes('<gpx')) {
-      const parsed = parseGPX(text, file.name.replace(/\.gpx$/i, ''));
-      setRouteState(parsed);
-      const bbox = [
-        Math.min(...parsed.points.map((p) => p[0])), Math.min(...parsed.points.map((p) => p[1])),
-        Math.max(...parsed.points.map((p) => p[0])), Math.max(...parsed.points.map((p) => p[1])),
-      ];
-      map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 80, duration: 1000 });
-      status(`Route loaded (${parsed.points.length} points). Draw a selection around it, or it will be embossed wherever it crosses your cutout.`, 'info');
-    } else {
-      const geojson = JSON.parse(text);
+    const buffer = await file.arrayBuffer();
+    // GeoJSON polygons become the cutout shape; every other format (and
+    // GeoJSON lines) loads as a breadcrumb trail.
+    if (/\.(geo)?json$/i.test(file.name)) {
+      const geojson = JSON.parse(new TextDecoder().decode(buffer));
       const ring = largestOuterRing(geojson);
       if (ring) {
         const points = downsample(ring.map((c) => [c[0], c[1]]), 800);
@@ -209,14 +193,16 @@ $('import-file').addEventListener('change', async (ev) => {
         const b = selMgr.selection.bbox;
         map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 80, duration: 1000 });
         status('GeoJSON polygon imported as the cutout shape.', 'info');
-      } else {
-        const line = firstLineString(geojson);
-        if (!line) throw new Error('No Polygon or LineString found in GeoJSON');
-        const points = downsample(line.map((c) => [c[0], c[1]]), 3000);
-        setRouteState({ name: file.name.replace(/\.(geo)?json$/i, ''), points });
-        status('GeoJSON line imported as an embossable route.', 'info');
+        return;
       }
     }
+    const { parseTrack } = await import('./tracks.js');
+    const track = parseTrack(file.name, buffer);
+    setRouteState(track);
+    const [w, s, e, n] = routeBounds(track.lines);
+    map.fitBounds([[w, s], [e, n]], { padding: 80, duration: 1000 });
+    const pts = track.lines.reduce((a, l) => a + l.length, 0);
+    status(`Trail “${track.name}” loaded (${pts} points). It shows on the map, the 3D model, 2D maps, and cut sheets wherever it crosses your selection.`, 'info');
   } catch (err) {
     console.error(err);
     status(`Import failed: ${err.message}`, 'error');
@@ -417,7 +403,7 @@ async function computeModel(sel, S, onProgress = () => {}) {
   // Route embossing
   if (S.embossRouteOn && route) {
     const lineWidthPx = Math.max(2, Math.round(gridW / 150));
-    const routeMask = rasterizePolylines([route.points], sel.bbox, gridW, gridH, lineWidthPx);
+    const routeMask = rasterizePolylines(route.lines, sel.bbox, gridW, gridH, lineWidthPx);
     for (let s = 0; s < routeMask.length; s++) {
       if (routeMask[s] && !mask[s]) routeMask[s] = 0;
     }
@@ -568,6 +554,7 @@ async function ensureTopo2D() {
       getSourceId: () => sourceSelect.value,
       getApiKey: () => $('maptiler-key').value.trim(),
       getPlaceName: () => lastPlaceName,
+      getRoute: () => route,
       fetchWaterFeatures,
       download,
       zipDownload,

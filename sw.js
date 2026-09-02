@@ -24,6 +24,7 @@ const SHELL_ASSETS = [
   './js/colors.js',
   './js/topomap.js',
   './js/topo2d.js',
+  './js/tracks.js',
 ];
 
 const CDN_HOSTS = ['unpkg.com', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];

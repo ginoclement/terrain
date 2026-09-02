@@ -182,11 +182,11 @@ export function set3DTerrain(map, on, exaggeration = 1.3) {
   }
 }
 
-/** Show or update a GPX route polyline on the map (empty array clears it). */
-export function setRoute(map, points) {
-  const features = points?.length
-    ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: points } }]
-    : [];
+/** Show or update trail polylines on the map (empty array clears them). */
+export function setRoute(map, lines) {
+  const features = (lines || [])
+    .filter((l) => l.length >= 2)
+    .map((coordinates) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } }));
   map.getSource('route').setData({ type: 'FeatureCollection', features });
 }
 
